@@ -1,4 +1,4 @@
-# server.py
+
 import os
 from livekit import api
 from fastapi import FastAPI, Query, Request
@@ -6,15 +6,14 @@ from fastapi.responses import PlainTextResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
-# Load environment variables
 load_dotenv()
 
 app = FastAPI()
 
-# Add CORS middleware to allow requests from your Expo app
+#
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, specify your app's domain
+    allow_origins=["*"],  
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -51,8 +50,7 @@ async def livekit_webhook(request: Request):
     event = payload.get("event")
     if event == "room_started":
         room_name = payload["room"]["name"]
-        # Trigger the agent to join room_name
-        # You can do this by spawning a subprocess, making an internal HTTP call, or using a message queue
+   
         import subprocess
         subprocess.Popen([
             "python", "agent.py", "connect","--room", room_name
