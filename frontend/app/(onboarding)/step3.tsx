@@ -38,7 +38,7 @@ export default function OnboardingStep3() {
       <View style={styles.buttonContainer}>
         <TouchableOpacity
           style={styles.getStartedButton}
-          onPress={() => router.replace("/")}
+          onPress={() => router.replace("/login")}
           activeOpacity={0.8}
         >
           <Text style={styles.getStartedButtonText}>Get Started</Text>

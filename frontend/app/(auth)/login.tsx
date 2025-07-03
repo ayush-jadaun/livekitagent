@@ -2,7 +2,6 @@ import { Link, router } from "expo-router";
 import React, { useEffect, useState } from "react";
 import {
   Alert,
-  Button,
   StyleSheet,
   Text,
   TextInput,
@@ -10,21 +9,20 @@ import {
   View,
   Platform,
   KeyboardAvoidingView,
-  Image,
+  ScrollView,
 } from "react-native";
 import LottieLoader from "../../components/LottieLoader";
 import { supabase } from "../../lib/supabase";
 
-// Colors based on color psychology for mental health apps
 const COLORS = {
-  background: "#E6F1F5", // soft blue
-  accent: "#72B5A4", // turquoise for positivity
-  button: "#6C63FF", // calming lavender
-  inputBg: "#F2F6F8", // very light blue
+  background: "#E6F1F5",
+  accent: "#72B5A4",
+  button: "#6C63FF",
+  inputBg: "#F2F6F8",
   inputBorder: "#B6E0E5",
-  text: "#22223B", // deep blue
-  link: "#1976D2", // blue for trust
-  error: "#E57373", // gentle red
+  text: "#22223B",
+  link: "#1976D2",
+  error: "#E57373",
   shadow: "#B6E0E5",
 };
 
@@ -33,7 +31,6 @@ export default function LoginScreen() {
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
 
-  // Check if user is already logged in, redirect to home if so
   useEffect(() => {
     const checkSession = async () => {
       const { data } = await supabase.auth.getSession();
@@ -59,10 +56,15 @@ export default function LoginScreen() {
   }
 
   return (
-    <View style={styles.outerContainer}>
-      <KeyboardAvoidingView
-        style={styles.container}
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
+    <KeyboardAvoidingView
+      style={styles.outerContainer}
+      behavior={Platform.OS === "ios" ? "padding" : "height"}
+      keyboardVerticalOffset={Platform.OS === "ios" ? 40 : 0}
+    >
+      <ScrollView
+        contentContainerStyle={styles.container}
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
       >
         <View style={styles.headerContainer}>
           <LottieLoader
@@ -85,6 +87,8 @@ export default function LoginScreen() {
             keyboardType="email-address"
             onChangeText={setEmail}
             value={email}
+            returnKeyType="next"
+            blurOnSubmit={false}
           />
           <Text style={styles.label}>Password</Text>
           <TextInput
@@ -95,7 +99,13 @@ export default function LoginScreen() {
             secureTextEntry
             onChangeText={setPassword}
             value={password}
+            returnKeyType="done"
           />
+          <View style={{ alignItems: "flex-end", marginTop: 8 }}>
+            <Link href="/forget-password" style={styles.forgotLink}>
+              Forgot Password?
+            </Link>
+          </View>
         </View>
         <TouchableOpacity
           style={[styles.button, loading && { backgroundColor: "#A3A0FB" }]}
@@ -118,8 +128,8 @@ export default function LoginScreen() {
             Your information is secure and confidential.
           </Text>
         </View>
-      </KeyboardAvoidingView>
-    </View>
+      </ScrollView>
+    </KeyboardAvoidingView>
   );
 }
 
@@ -127,13 +137,13 @@ const styles = StyleSheet.create({
   outerContainer: {
     flex: 1,
     backgroundColor: COLORS.background,
-    justifyContent: "center",
   },
   container: {
-    flex: 1,
+    flexGrow: 1,
     justifyContent: "center",
     alignItems: "center",
     paddingHorizontal: 24,
+    minHeight: "100%",
   },
   headerContainer: {
     alignItems: "center",
@@ -210,6 +220,13 @@ const styles = StyleSheet.create({
   linkText: {
     color: COLORS.link,
     fontWeight: "bold",
+    textDecorationLine: "underline",
+  },
+  forgotLink: {
+    color: COLORS.link,
+    fontSize: 14,
+    fontWeight: "600",
+    marginTop: 2,
     textDecorationLine: "underline",
   },
   hintContainer: {
