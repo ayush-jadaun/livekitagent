@@ -1,4 +1,4 @@
-from dotenv import load_dotenv
+from dotenv import load_dotenv # type: ignore
 
 from livekit import agents # type: ignore
 from livekit.agents import AgentSession, Agent, RoomInputOptions # type: ignore
