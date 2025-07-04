@@ -62,8 +62,26 @@ export default function App() {
   const [roomInfo, setRoomInfo] = useState<RoomInfo | null>(null);
   const [user, setUser] = useState<User | null>(null);
   const [autoStartAttempted, setAutoStartAttempted] = useState<boolean>(false);
+  const [error, setError] = useState<string | null>(null);
 
   const router = useRouter();
+
+  // Check if the server is online (simple /ping endpoint or fallback to base url)
+  const checkServerOnline = async (): Promise<boolean> => {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 3000);
+      const res = await fetch(`${SERVER_URL}/ping`, {
+        method: "GET",
+        signal: controller.signal,
+      });
+      clearTimeout(timeoutId);
+      if (res.ok) return true;
+      return false;
+    } catch (e) {
+      return false;
+    }
+  };
 
   useEffect(() => {
     let start = async () => {
@@ -77,11 +95,21 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (user && !isConnected && !autoStartAttempted && !loading) {
+    if (user && !isConnected && !autoStartAttempted && !loading && !error) {
       setAutoStartAttempted(true);
       initializeAndStartCall();
     }
-  }, [user, isConnected, autoStartAttempted, loading]);
+  }, [user, isConnected, autoStartAttempted, loading, error]);
+
+  // After showing error, push user to homepage after 2-3 seconds
+  useEffect(() => {
+    if (error) {
+      const timeout = setTimeout(() => {
+        router.push("/");
+      }, 2500);
+      return () => clearTimeout(timeout);
+    }
+  }, [error]);
 
   const checkAuth = async (): Promise<void> => {
     try {
@@ -116,8 +144,8 @@ export default function App() {
       }
       return null;
     } catch (error) {
-      console.error("Error checking existing room:", error);
-      return null;
+      // Server likely offline/network error
+      throw new Error("Server is offline. Please try again later.");
     }
   };
 
@@ -141,8 +169,8 @@ export default function App() {
       }
       return null;
     } catch (error) {
-      console.error("Error creating room:", error);
-      return null;
+      // Server likely offline/network error
+      throw new Error("Server is offline. Please try again later.");
     }
   };
 
@@ -153,7 +181,17 @@ export default function App() {
     }
 
     setLoading(true);
+    setError(null);
+
     try {
+      // Check if server is online first
+      const online = await checkServerOnline();
+      if (!online) {
+        throw new Error(
+          "The server appears to be offline. Please try again later."
+        );
+      }
+
       const {
         data: { session },
       } = await supabase.auth.getSession();
@@ -177,10 +215,12 @@ export default function App() {
       console.log("Room initialized:", room.room_name);
 
       await startSession(session.access_token, room);
-    } catch (error) {
+    } catch (error: any) {
       console.error("Initialize and start call error:", error);
-      Alert.alert("Error", "Failed to initialize call");
-      setAutoStartAttempted(false);
+      setError(
+        error?.message ||
+          "Failed to initialize call. Please check your connection and try again."
+      );
     } finally {
       setLoading(false);
     }
@@ -213,8 +253,8 @@ export default function App() {
       console.log("Session started:", sessionData.session_id);
       console.log("Room:", sessionData.room_name);
     } catch (error) {
-      console.error("Session start error:", error);
-      throw error;
+      // Server likely offline/network error
+      throw new Error("Server is offline. Please try again later.");
     }
   };
 
@@ -242,6 +282,7 @@ export default function App() {
         console.log("Session ended successfully");
       }
     } catch (error) {
+      // Don't show error if server is offline on endSession
       console.error("Error ending session:", error);
     }
 
@@ -259,6 +300,7 @@ export default function App() {
   };
 
   const retryConnection = async (): Promise<void> => {
+    setError(null);
     setAutoStartAttempted(false);
     setLoading(false);
     await initializeAndStartCall();
@@ -270,6 +312,31 @@ export default function App() {
         <Text style={styles.title}>LiveKit Call</Text>
         <Text style={styles.subtitle}>Please log in to continue</Text>
         <Text style={styles.note}>Redirecting to login...</Text>
+      </View>
+    );
+  }
+
+  if (error) {
+    return (
+      <View style={styles.setupContainer}>
+        <Text style={styles.title}>Connection Error</Text>
+        <Text style={styles.subtitle}>{error}</Text>
+        <Text style={styles.note}>
+          You will be redirected to the homepage shortly...
+        </Text>
+        <TouchableOpacity
+          style={[styles.button, styles.callButton]}
+          onPress={retryConnection}
+          disabled={loading}
+        >
+          <Text style={styles.buttonText}>Retry</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.button, styles.logoutButton]}
+          onPress={handleCancel}
+        >
+          <Text style={styles.buttonText}>Cancel</Text>
+        </TouchableOpacity>
       </View>
     );
   }
