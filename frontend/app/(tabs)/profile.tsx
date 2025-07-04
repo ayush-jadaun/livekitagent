@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import {
   View,
   Text,
@@ -8,9 +8,12 @@ import {
   SafeAreaView,
   ScrollView,
   Alert,
+  ActivityIndicator,
+  RefreshControl,
 } from "react-native";
 import { router } from "expo-router";
-import { supabase } from "../../lib/supabase"; // Adjust path as needed
+import { supabase } from "../../lib/supabase";
+import { User } from "@supabase/supabase-js";
 
 const { width, height } = Dimensions.get("window");
 
@@ -28,26 +31,203 @@ const COLORS = {
   card: "#FFFFFF",
 };
 
+interface UserProfile {
+  id: string;
+  name: string;
+  email: string;
+  age?: number;
+  created_at: string;
+  updated_at: string;
+}
+
+interface UserStats {
+  totalSessions: number;
+  currentStreak: number;
+  totalMinutes: number;
+  favoriteActivity: string;
+}
+
 export default function ProfileScreen() {
-  const [user, setUser] = useState({
-    name: "Mindful User",
-    email: "user@mindfulapp.com",
-    joinDate: "December 2024",
-    totalSessions: 42,
-    currentStreak: 7,
+  const [user, setUser] = useState<User | null>(null);
+  const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
+  const [userStats, setUserStats] = useState<UserStats>({
+    totalSessions: 0,
+    currentStreak: 0,
+    totalMinutes: 0,
     favoriteActivity: "Meditation",
   });
-
+  const [isLoading, setIsLoading] = useState(true);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+
+  useEffect(() => {
+    loadUserData();
+  }, []);
+
+  const loadUserData = async () => {
+    try {
+      setIsLoading(true);
+
+      // Get current user session
+      const {
+        data: { session },
+        error: sessionError,
+      } = await supabase.auth.getSession();
+
+      if (sessionError) {
+        console.error("Session error:", sessionError);
+        router.navigate("/(auth)/login");
+        return;
+      }
+
+      if (!session?.user) {
+        console.log("No user session found");
+        router.navigate("/login");
+        return;
+      }
+
+      setUser(session.user);
+
+      // Fetch user profile from your backend or database
+      await fetchUserProfile(session.user.id, session.access_token);
+
+      // Fetch user statistics
+      await fetchUserStats(session.user.id, session.access_token);
+    } catch (error) {
+      console.error("Error loading user data:", error);
+      Alert.alert("Error", "Failed to load profile data");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const fetchUserProfile = async (userId: string, accessToken: string) => {
+    try {
+      // Option 1: If you have a users table in Supabase
+      const { data, error } = await supabase
+        .from("users")
+        .select("*")
+        .eq("id", userId)
+        .single();
+
+      if (error && error.code !== "PGRST116") {
+        // PGRST116 is "not found"
+        console.error("Error fetching user profile:", error);
+        return;
+      }
+
+      if (data) {
+        setUserProfile(data);
+      }
+
+      // Option 2: If you're using your backend API
+      // const response = await fetch(`${SERVER_URL}/api/users/profile`, {
+      //   headers: {
+      //     Authorization: `Bearer ${accessToken}`,
+      //     "Content-Type": "application/json",
+      //   },
+      // });
+
+      // if (response.ok) {
+      //   const profileData = await response.json();
+      //   setUserProfile(profileData);
+      // }
+    } catch (error) {
+      console.error("Error fetching user profile:", error);
+    }
+  };
+
+  const fetchUserStats = async (userId: string, accessToken: string) => {
+    try {
+      // Option 1: If you have sessions table in Supabase
+      const { data: sessionsData, error: sessionsError } = await supabase
+        .from("sessions")
+        .select("*")
+        .eq("user_id", userId);
+
+      if (sessionsError) {
+        console.error("Error fetching sessions:", sessionsError);
+      } else if (sessionsData) {
+        // Calculate stats from sessions data
+        const totalSessions = sessionsData.length;
+        const totalMinutes = sessionsData.reduce((sum, session) => {
+          // Assuming you have a duration field in minutes
+          return sum + (session.duration_minutes || 0);
+        }, 0);
+
+        // Calculate current streak (simplified logic)
+        const currentStreak = calculateStreak(sessionsData);
+
+        setUserStats({
+          totalSessions,
+          currentStreak,
+          totalMinutes,
+          favoriteActivity: "Meditation", // You can determine this from session data
+        });
+      }
+
+      // Option 2: If you're using your backend API
+      // const response = await fetch(`${SERVER_URL}/api/users/stats`, {
+      //   headers: {
+      //     Authorization: `Bearer ${accessToken}`,
+      //     "Content-Type": "application/json",
+      //   },
+      // });
+
+      // if (response.ok) {
+      //   const statsData = await response.json();
+      //   setUserStats(statsData);
+      // }
+    } catch (error) {
+      console.error("Error fetching user stats:", error);
+    }
+  };
+
+  const calculateStreak = (sessions: any[]) => {
+    if (!sessions.length) return 0;
+
+    // Sort sessions by date (most recent first)
+    const sortedSessions = sessions.sort(
+      (a, b) =>
+        new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+    );
+
+    let streak = 0;
+    let currentDate = new Date();
+    currentDate.setHours(0, 0, 0, 0);
+
+    for (const session of sortedSessions) {
+      const sessionDate = new Date(session.created_at);
+      sessionDate.setHours(0, 0, 0, 0);
+
+      const daysDiff = Math.floor(
+        (currentDate.getTime() - sessionDate.getTime()) / (1000 * 60 * 60 * 24)
+      );
+
+      if (daysDiff === streak) {
+        streak++;
+        currentDate.setDate(currentDate.getDate() - 1);
+      } else {
+        break;
+      }
+    }
+
+    return streak;
+  };
+
+  const onRefresh = async () => {
+    setRefreshing(true);
+    await loadUserData();
+    setRefreshing(false);
+  };
 
   const handleEditProfile = () => {
     // Navigate to edit profile screen
-    console.log("Edit profile clicked");
+    // router.push("/profile/edit");
   };
 
   const handleSettings = () => {
     // Navigate to settings screen
-    console.log("Settings clicked");
   };
 
   const handleLogout = async () => {
@@ -69,7 +249,7 @@ export default function ProfileScreen() {
               console.error("Logout error:", error);
             } else {
               // Successfully signed out
-              router.replace("/(auth)/login"); // Adjust route as needed
+              router.replace("/(auth)/login");
             }
           } catch (error) {
             Alert.alert("Error", "An unexpected error occurred.");
@@ -81,6 +261,51 @@ export default function ProfileScreen() {
       },
     ]);
   };
+
+  const formatJoinDate = (dateString: string) => {
+    const date = new Date(dateString);
+    return date.toLocaleDateString("en-US", {
+      year: "numeric",
+      month: "long",
+    });
+  };
+
+  const getUserDisplayName = () => {
+    if (userProfile?.name) {
+      return userProfile.name;
+    }
+    if (user?.user_metadata?.full_name) {
+      return user.user_metadata.full_name;
+    }
+    if (user?.email) {
+      return user.email.split("@")[0];
+    }
+    return "User";
+  };
+
+  const getUserEmail = () => {
+    return user?.email || "No email";
+  };
+
+  if (isLoading) {
+    return (
+      <SafeAreaView style={[styles.container, styles.loadingContainer]}>
+        <ActivityIndicator size="large" color={COLORS.primary} />
+        <Text style={styles.loadingText}>Loading profile...</Text>
+      </SafeAreaView>
+    );
+  }
+
+  if (!user) {
+    return (
+      <SafeAreaView style={[styles.container, styles.loadingContainer]}>
+        <Text style={styles.errorText}>Unable to load profile</Text>
+        <TouchableOpacity style={styles.retryButton} onPress={loadUserData}>
+          <Text style={styles.retryButtonText}>Retry</Text>
+        </TouchableOpacity>
+      </SafeAreaView>
+    );
+  }
 
   return (
     <SafeAreaView style={styles.container}>
@@ -95,32 +320,46 @@ export default function ProfileScreen() {
         </TouchableOpacity>
       </View>
 
-      <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        style={styles.content}
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
+        }
+      >
         {/* Profile Picture and Info */}
         <View style={styles.profileSection}>
           <View style={styles.avatarContainer}>
             <View style={styles.avatar}>
-              <Text style={styles.avatarText}>🧘</Text>
+              <Text style={styles.avatarText}>
+                {getUserDisplayName().charAt(0).toUpperCase()}
+              </Text>
             </View>
           </View>
 
-          <Text style={styles.userName}>{user.name}</Text>
-          <Text style={styles.userEmail}>{user.email}</Text>
-          <Text style={styles.joinDate}>Member since {user.joinDate}</Text>
+          <Text style={styles.userName}>{getUserDisplayName()}</Text>
+          <Text style={styles.userEmail}>{getUserEmail()}</Text>
+          {userProfile?.age && (
+            <Text style={styles.userAge}>Age: {userProfile.age}</Text>
+          )}
+          <Text style={styles.joinDate}>
+            Member since{" "}
+            {formatJoinDate(userProfile?.created_at || user.created_at)}
+          </Text>
         </View>
 
         {/* Stats Section */}
         <View style={styles.statsSection}>
           <View style={styles.statCard}>
-            <Text style={styles.statNumber}>{user.totalSessions}</Text>
+            <Text style={styles.statNumber}>{userStats.totalSessions}</Text>
             <Text style={styles.statLabel}>Sessions</Text>
           </View>
           <View style={styles.statCard}>
-            <Text style={styles.statNumber}>{user.currentStreak}</Text>
+            <Text style={styles.statNumber}>{userStats.currentStreak}</Text>
             <Text style={styles.statLabel}>Day Streak</Text>
           </View>
           <View style={styles.statCard}>
-            <Text style={styles.statNumber}>156</Text>
+            <Text style={styles.statNumber}>{userStats.totalMinutes}</Text>
             <Text style={styles.statLabel}>Minutes</Text>
           </View>
         </View>
@@ -131,7 +370,9 @@ export default function ProfileScreen() {
           <View style={styles.activityCard}>
             <Text style={styles.activityEmoji}>🧘‍♂️</Text>
             <View style={styles.activityInfo}>
-              <Text style={styles.activityName}>{user.favoriteActivity}</Text>
+              <Text style={styles.activityName}>
+                {userStats.favoriteActivity}
+              </Text>
               <Text style={styles.activityDescription}>
                 Mindfulness practice for inner peace
               </Text>
@@ -141,22 +382,39 @@ export default function ProfileScreen() {
 
         {/* Menu Options */}
         <View style={styles.menuSection}>
-          <TouchableOpacity style={styles.menuItem} activeOpacity={0.7}>
+          <TouchableOpacity
+            style={styles.menuItem}
+            activeOpacity={0.7}
+          >
             <Text style={styles.menuEmoji}>📊</Text>
             <Text style={styles.menuText}>My Progress</Text>
             <Text style={styles.menuArrow}>→</Text>
           </TouchableOpacity>
 
-          <TouchableOpacity style={styles.menuItem} activeOpacity={0.7}>
+          <TouchableOpacity
+            style={styles.menuItem}
+            activeOpacity={0.7}
+
+          >
             <Text style={styles.menuEmoji}>💭</Text>
             <Text style={styles.menuText}>Journal Entries</Text>
             <Text style={styles.menuArrow}>→</Text>
           </TouchableOpacity>
-          <TouchableOpacity onPress={() => router.navigate("/step1")}>
-            <Text>Onboarding</Text>
+
+          <TouchableOpacity
+            style={styles.menuItem}
+            activeOpacity={0.7}
+            onPress={() => router.push("/step1")}
+          >
+            <Text style={styles.menuEmoji}>🎯</Text>
+            <Text style={styles.menuText}>Onboarding</Text>
+            <Text style={styles.menuArrow}>→</Text>
           </TouchableOpacity>
 
-          <TouchableOpacity style={styles.menuItem} activeOpacity={0.7}>
+          <TouchableOpacity
+            style={styles.menuItem}
+            activeOpacity={0.7}
+          >
             <Text style={styles.menuEmoji}>🎯</Text>
             <Text style={styles.menuText}>Goals & Reminders</Text>
             <Text style={styles.menuArrow}>→</Text>
@@ -172,12 +430,22 @@ export default function ProfileScreen() {
             <Text style={styles.menuArrow}>→</Text>
           </TouchableOpacity>
 
-          <TouchableOpacity style={styles.menuItem} activeOpacity={0.7}>
+          <TouchableOpacity
+            style={styles.menuItem}
+            activeOpacity={0.7}
+          >
             <Text style={styles.menuEmoji}>💬</Text>
             <Text style={styles.menuText}>Help & Support</Text>
             <Text style={styles.menuArrow}>→</Text>
           </TouchableOpacity>
         </View>
+
+        {/* User ID for debugging (remove in production) */}
+        {__DEV__ && (
+          <View style={styles.debugSection}>
+            <Text style={styles.debugText}>User ID: {user.id}</Text>
+          </View>
+        )}
 
         {/* Logout Button */}
         <TouchableOpacity
@@ -205,6 +473,32 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: COLORS.background,
+  },
+  loadingContainer: {
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  loadingText: {
+    marginTop: 16,
+    fontSize: 16,
+    color: COLORS.subtitle,
+  },
+  errorText: {
+    fontSize: 16,
+    color: COLORS.accent,
+    textAlign: "center",
+    marginBottom: 16,
+  },
+  retryButton: {
+    backgroundColor: COLORS.primary,
+    paddingHorizontal: 24,
+    paddingVertical: 12,
+    borderRadius: 8,
+  },
+  retryButtonText: {
+    color: COLORS.buttonText,
+    fontSize: 16,
+    fontWeight: "600",
   },
   header: {
     flexDirection: "row",
@@ -255,6 +549,8 @@ const styles = StyleSheet.create({
   },
   avatarText: {
     fontSize: 50,
+    fontWeight: "bold",
+    color: COLORS.buttonText,
   },
   userName: {
     fontSize: 28,
@@ -264,6 +560,11 @@ const styles = StyleSheet.create({
   },
   userEmail: {
     fontSize: 16,
+    color: COLORS.subtitle,
+    marginBottom: 4,
+  },
+  userAge: {
+    fontSize: 14,
     color: COLORS.subtitle,
     marginBottom: 4,
   },
@@ -373,6 +674,15 @@ const styles = StyleSheet.create({
     fontSize: 18,
     color: COLORS.subtitle,
     opacity: 0.6,
+  },
+  debugSection: {
+    paddingHorizontal: 24,
+    marginBottom: 16,
+  },
+  debugText: {
+    fontSize: 12,
+    color: COLORS.subtitle,
+    fontFamily: "monospace",
   },
   logoutButton: {
     backgroundColor: COLORS.accent,

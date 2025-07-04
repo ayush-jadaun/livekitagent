@@ -5,10 +5,12 @@ import {
   FlatList,
   ListRenderItem,
   Text,
-  TextInput,
   TouchableOpacity,
   Alert,
   ActivityIndicator,
+  SafeAreaView,
+  StatusBar,
+  Dimensions,
 } from "react-native";
 import { useState, useEffect } from "react";
 import {
@@ -21,11 +23,13 @@ import {
   registerGlobals,
 } from "@livekit/react-native";
 import { Track } from "livekit-client";
-import { supabase } from "../../lib/supabase"; 
+import { supabase } from "../../lib/supabase";
 import { User } from "@supabase/supabase-js";
 import { useRouter } from "expo-router";
+
 registerGlobals();
 
+const { width, height } = Dimensions.get("window");
 const SERVER_URL = "http://192.168.34.175:8000";
 
 interface RoomInfo {
@@ -39,10 +43,10 @@ interface CurrentSession {
   room_name: string;
   token: string;
   livekit_url: string;
-  expires_at: string
+  expires_at: string;
 }
 
-interface SetupResponse {
+interface CreateRoomResponse {
   room_id: string;
   room_name: string;
 }
@@ -52,14 +56,12 @@ export default function App() {
   const [token, setToken] = useState<string>("");
   const [isConnected, setIsConnected] = useState<boolean>(false);
   const [loading, setLoading] = useState<boolean>(false);
-  const [userName, setUserName] = useState<string>("");
-  const [userAge, setUserAge] = useState<string>("");
-  const [isSetup, setIsSetup] = useState<boolean>(false);
   const [currentSession, setCurrentSession] = useState<CurrentSession | null>(
     null
   );
   const [roomInfo, setRoomInfo] = useState<RoomInfo | null>(null);
   const [user, setUser] = useState<User | null>(null);
+  const [autoStartAttempted, setAutoStartAttempted] = useState<boolean>(false);
 
   const router = useRouter();
 
@@ -75,6 +77,14 @@ export default function App() {
     };
   }, []);
 
+  // Auto-start call when user is ready
+  useEffect(() => {
+    if (user && !isConnected && !autoStartAttempted && !loading) {
+      setAutoStartAttempted(true);
+      initializeAndStartCall();
+    }
+  }, [user, isConnected, autoStartAttempted, loading]);
+
   const checkAuth = async (): Promise<void> => {
     try {
       const {
@@ -82,7 +92,6 @@ export default function App() {
       } = await supabase.auth.getSession();
       if (session?.user) {
         setUser(session.user);
-        await checkUserSetup(session.access_token);
       } else {
         // User is not authenticated - redirect to login
         router.navigate("/login");
@@ -93,7 +102,9 @@ export default function App() {
     }
   };
 
-  const checkUserSetup = async (accessToken: string): Promise<void> => {
+  const checkExistingRoom = async (
+    accessToken: string
+  ): Promise<RoomInfo | null> => {
     try {
       const response = await fetch(`${SERVER_URL}/api/users/room`, {
         headers: {
@@ -104,21 +115,41 @@ export default function App() {
 
       if (response.ok) {
         const roomData: RoomInfo = await response.json();
-        setRoomInfo(roomData);
-        setIsSetup(true);
+        return roomData;
       }
+      return null;
     } catch (error) {
-      console.error("Error checking user setup:", error);
+      console.error("Error checking existing room:", error);
+      return null;
     }
   };
 
+  const createRoom = async (accessToken: string): Promise<RoomInfo | null> => {
+    try {
+      const response = await fetch(`${SERVER_URL}/api/rooms/create`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+        },
+      });
 
-  const setupUser = async (): Promise<void> => {
-    if (!userName.trim()) {
-      Alert.alert("Error", "Please enter your name");
-      return;
+      if (response.ok) {
+        const roomData: CreateRoomResponse = await response.json();
+        return {
+          room_id: roomData.room_id,
+          room_name: roomData.room_name,
+          room_condition: "off",
+        };
+      }
+      return null;
+    } catch (error) {
+      console.error("Error creating room:", error);
+      return null;
     }
+  };
 
+  const initializeAndStartCall = async (): Promise<void> => {
     if (!user) {
       Alert.alert("Error", "User not authenticated");
       return;
@@ -128,115 +159,48 @@ export default function App() {
     try {
       const {
         data: { session },
-        error: sessionError,
       } = await supabase.auth.getSession();
-
-      if (sessionError) {
-        console.error("Session error:", sessionError);
-        throw new Error("Failed to get session");
-      }
 
       if (!session) {
         throw new Error("No active session");
       }
 
-      console.log(
-        "Sending request with token:",
-        session.access_token.substring(0, 20) + "..."
-      );
+      // Check if user has existing room
+      let room = await checkExistingRoom(session.access_token);
 
-      const response = await fetch(`${SERVER_URL}/api/users/setup`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${session.access_token}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          name: userName,
-          age: userAge ? parseInt(userAge) : null,
-        }),
-      });
+      // If no room exists, create one
+      if (!room) {
+        console.log("No existing room found, creating new room...");
+        room = await createRoom(session.access_token);
 
-      console.log("Response status:", response.status);
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.error("Setup error response:", errorText);
-        throw new Error(`Server error: ${response.status} - ${errorText}`);
+        if (!room) {
+          throw new Error("Failed to create room");
+        }
       }
 
-      const setupData: SetupResponse = await response.json();
-      setRoomInfo({
-        room_id: setupData.room_id,
-        room_name: setupData.room_name,
-        room_condition: "off",
-      });
-      setIsSetup(true);
+      setRoomInfo(room);
+      console.log("Room initialized:", room.room_name);
 
-      Alert.alert("Success", "Profile setup complete!");
+      // Start the call session
+      await startSession(session.access_token, room);
     } catch (error) {
-      console.error("Setup error:", error);
-      let message = "Failed to setup profile";
-      if (error instanceof Error) {
-        message += `: ${error.message}`;
-      }
-      Alert.alert("Error", message);
+      console.error("Initialize and start call error:", error);
+      Alert.alert("Error", "Failed to initialize call");
+      setAutoStartAttempted(false); // Allow retry
     } finally {
       setLoading(false);
     }
   };
 
-
-  const debugToken = async () => {
+  const startSession = async (
+    accessToken: string,
+    room: RoomInfo
+  ): Promise<void> => {
     try {
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
-      if (session) {
-        console.log("User ID:", session.user.id);
-        console.log("Token expires at:", new Date(session.expires_at! * 1000));
-        console.log(
-          "Token preview:",
-          session.access_token.substring(0, 50) + "..."
-        );
-
-        // Decode token to see payload 
-        const base64Payload = session.access_token.split(".")[1];
-        const payload = JSON.parse(atob(base64Payload));
-        console.log("Token payload:", payload);
-      }
-    } catch (error) {
-      console.error("Debug token error:", error);
-    }
-  };
-
-  // Call this before making API calls to debug
-  debugToken();
-
-  const startSession = async (): Promise<void> => {
-    if (!roomInfo) {
-      Alert.alert("Error", "Room not initialized");
-      return;
-    }
-
-    if (!user) {
-      Alert.alert("Error", "User not authenticated");
-      return;
-    }
-
-    setLoading(true);
-    try {
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
-      if (!session) {
-        throw new Error("No active session");
-      }
-
       const response = await fetch(`${SERVER_URL}/api/sessions/start`, {
         method: "POST",
         headers: {
-          Authorization: `Bearer ${session.access_token}`,
+          Authorization: `Bearer ${accessToken}`,
           "Content-Type": "application/json",
         },
       });
@@ -256,9 +220,7 @@ export default function App() {
       console.log("Room:", sessionData.room_name);
     } catch (error) {
       console.error("Session start error:", error);
-      Alert.alert("Error", "Failed to start call");
-    } finally {
-      setLoading(false);
+      throw error;
     }
   };
 
@@ -294,18 +256,28 @@ export default function App() {
     setCurrentSession(null);
     setToken("");
     setWsURL("");
+    setAutoStartAttempted(false);
+
+    // Navigate to home page after ending call
+    router.push("/");
   };
 
   const handleLogout = async (): Promise<void> => {
     try {
       await supabase.auth.signOut();
       setUser(null);
-      setIsSetup(false);
       setRoomInfo(null);
-      router.navigate("/login")
+      setAutoStartAttempted(false);
+      router.navigate("/login");
     } catch (error) {
       console.error("Logout error:", error);
     }
+  };
+
+  const retryConnection = async (): Promise<void> => {
+    setAutoStartAttempted(false);
+    setLoading(false);
+    await initializeAndStartCall();
   };
 
   // If no user, show message (in practice, you'd navigate to login)
@@ -315,43 +287,6 @@ export default function App() {
         <Text style={styles.title}>LiveKit Call</Text>
         <Text style={styles.subtitle}>Please log in to continue</Text>
         <Text style={styles.note}>Redirecting to login...</Text>
-      </View>
-    );
-  }
-
-  // If not setup, show setup screen
-  if (!isSetup) {
-    return (
-      <View style={styles.setupContainer}>
-        <Text style={styles.title}>Setup Your Profile</Text>
-        <Text style={styles.subtitle}>Welcome, {user.email}!</Text>
-
-        <TextInput
-          style={styles.input}
-          placeholder="Your Name *"
-          value={userName}
-          onChangeText={setUserName}
-        />
-
-        <TextInput
-          style={styles.input}
-          placeholder="Your Age (optional)"
-          value={userAge}
-          onChangeText={setUserAge}
-          keyboardType="numeric"
-        />
-
-        <TouchableOpacity
-          style={styles.button}
-          onPress={setupUser}
-          disabled={loading}
-        >
-          {loading ? (
-            <ActivityIndicator color="white" />
-          ) : (
-            <Text style={styles.buttonText}>Complete Setup</Text>
-          )}
-        </TouchableOpacity>
       </View>
     );
   }
@@ -378,10 +313,40 @@ export default function App() {
     );
   }
 
-  // Main screen - ready to call
+  // Loading/connecting screen - show while auto-starting call
+  if (loading || (user && !autoStartAttempted)) {
+    return (
+      <View style={styles.setupContainer}>
+        <Text style={styles.title}>Connecting...</Text>
+        <Text style={styles.subtitle}>
+          {roomInfo ? "Starting your call" : "Setting up your room"}
+        </Text>
+        <ActivityIndicator
+          size="large"
+          color="#007AFF"
+          style={{ marginTop: 20 }}
+        />
+
+        {roomInfo && (
+          <View style={styles.roomInfo}>
+            <Text style={styles.roomText}>Room: {roomInfo.room_name}</Text>
+          </View>
+        )}
+
+        <TouchableOpacity
+          style={[styles.button, styles.logoutButton]}
+          onPress={handleLogout}
+        >
+          <Text style={styles.buttonText}>Cancel & Logout</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
+
+  // Fallback screen with manual retry (shown if auto-start failed)
   return (
     <View style={styles.setupContainer}>
-      <Text style={styles.title}>Welcome, {userName}!</Text>
+      <Text style={styles.title}>Connection Failed</Text>
       <Text style={styles.subtitle}>Logged in as: {user.email}</Text>
 
       {roomInfo && (
@@ -393,15 +358,17 @@ export default function App() {
         </View>
       )}
 
+      <Text style={styles.note}>Auto-connect failed. Try again:</Text>
+
       <TouchableOpacity
         style={[styles.button, styles.callButton]}
-        onPress={startSession}
+        onPress={retryConnection}
         disabled={loading}
       >
         {loading ? (
           <ActivityIndicator color="white" />
         ) : (
-          <Text style={styles.buttonText}>Start Call</Text>
+          <Text style={styles.buttonText}>Retry Connection</Text>
         )}
       </TouchableOpacity>
 
@@ -443,31 +410,46 @@ const RoomView: React.FC<RoomViewProps> = ({
   };
 
   return (
-    <View style={styles.container}>
-      <View style={styles.header}>
-        <View>
-          <Text style={styles.roomTitle}>Room: {roomName}</Text>
+    <SafeAreaView style={styles.callContainer}>
+      <StatusBar barStyle="light-content" backgroundColor="#1a1a1a" />
+
+      {/* Header */}
+      <View style={styles.callHeader}>
+        <View style={styles.callHeaderContent}>
+          <Text style={styles.callRoomTitle}>{roomName}</Text>
           {sessionId && (
-            <Text style={styles.sessionText}>
-              Session: {sessionId.substring(0, 8)}...
+            <Text style={styles.callSessionText}>
+              ID: {sessionId.substring(0, 8)}...
             </Text>
           )}
         </View>
-        <TouchableOpacity
-          style={styles.disconnectButton}
-          onPress={onDisconnect}
-        >
-          <Text style={styles.disconnectText}>Leave</Text>
-        </TouchableOpacity>
       </View>
 
-      <FlatList
-        data={tracks}
-        renderItem={renderTrack}
-        keyExtractor={(item, index) => index.toString()}
-        style={styles.tracksList}
-      />
-    </View>
+      {/* Main content area */}
+      <View style={styles.callContent}>
+        <FlatList
+          data={tracks}
+          renderItem={renderTrack}
+          keyExtractor={(item, index) => index.toString()}
+          style={styles.tracksList}
+          contentContainerStyle={styles.tracksContainer}
+          showsVerticalScrollIndicator={false}
+        />
+      </View>
+
+      {/* Footer with controls */}
+      <View style={styles.callFooter}>
+        <View style={styles.callControls}>
+          <TouchableOpacity
+            style={styles.endCallButton}
+            onPress={onDisconnect}
+            activeOpacity={0.8}
+          >
+            <Text style={styles.endCallText}>End Call</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    </SafeAreaView>
   );
 };
 
@@ -495,17 +477,6 @@ const styles = StyleSheet.create({
     marginBottom: 20,
     color: "#666",
     textAlign: "center",
-  },
-  input: {
-    width: "100%",
-    height: 50,
-    borderWidth: 1,
-    borderColor: "#ddd",
-    borderRadius: 8,
-    paddingHorizontal: 15,
-    marginBottom: 15,
-    backgroundColor: "white",
-    fontSize: 16,
   },
   button: {
     backgroundColor: "#007AFF",
@@ -554,49 +525,92 @@ const styles = StyleSheet.create({
     color: "#888",
     textAlign: "center",
     marginTop: 20,
+    marginBottom: 10,
     fontStyle: "italic",
   },
-  header: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    padding: 15,
-    backgroundColor: "rgba(0,0,0,0.7)",
-    paddingTop: 50,
+  // Call screen styles
+  callContainer: {
+    flex: 1,
+    backgroundColor: "#1a1a1a",
   },
-  roomTitle: {
+  callHeader: {
+    backgroundColor: "#2c2c2c",
+    paddingHorizontal: 20,
+    paddingVertical: 15,
+    borderBottomWidth: 1,
+    borderBottomColor: "#404040",
+  },
+  callHeaderContent: {
+    alignItems: "center",
+  },
+  callRoomTitle: {
+    color: "white",
+    fontSize: 20,
+    fontWeight: "bold",
+    textAlign: "center",
+  },
+  callSessionText: {
+    color: "#ccc",
+    fontSize: 14,
+    marginTop: 4,
+    textAlign: "center",
+  },
+  callContent: {
+    flex: 1,
+    backgroundColor: "#1a1a1a",
+  },
+  callFooter: {
+    backgroundColor: "#2c2c2c",
+    paddingHorizontal: 20,
+    paddingVertical: 20,
+    borderTopWidth: 1,
+    borderTopColor: "#404040",
+  },
+  callControls: {
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  endCallButton: {
+    backgroundColor: "#FF3B30",
+    paddingHorizontal: 40,
+    paddingVertical: 15,
+    borderRadius: 25,
+    minWidth: 140,
+    alignItems: "center",
+    shadowColor: "#000",
+    shadowOffset: {
+      width: 0,
+      height: 2,
+    },
+    shadowOpacity: 0.25,
+    shadowRadius: 3.84,
+    elevation: 5,
+  },
+  endCallText: {
     color: "white",
     fontSize: 18,
-    fontWeight: "bold",
-  },
-  sessionText: {
-    color: "#ccc",
-    fontSize: 12,
-    marginTop: 2,
-  },
-  disconnectButton: {
-    backgroundColor: "#FF3B30",
-    paddingHorizontal: 15,
-    paddingVertical: 8,
-    borderRadius: 6,
-  },
-  disconnectText: {
-    color: "white",
     fontWeight: "bold",
   },
   tracksList: {
     flex: 1,
   },
+  tracksContainer: {
+    padding: 10,
+  },
   participantView: {
-    height: 300,
-    margin: 10,
+    height: Math.min(height * 0.4, 300),
+    marginVertical: 10,
+    marginHorizontal: 10,
     backgroundColor: "#333",
-    borderRadius: 8,
+    borderRadius: 12,
     justifyContent: "center",
     alignItems: "center",
+    borderWidth: 1,
+    borderColor: "#555",
   },
   placeholderText: {
-    color: "white",
+    color: "#ccc",
     fontSize: 16,
+    fontWeight: "500",
   },
 });
