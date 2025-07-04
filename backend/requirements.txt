@@ -6,4 +6,5 @@ python-dotenv
 livekit-api
 fastapi
 uvicorn
+asyncpg
 python-dotenv

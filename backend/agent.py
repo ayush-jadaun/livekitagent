@@ -12,7 +12,6 @@ from livekit.plugins import ( # type: ignore
 from livekit.plugins.turn_detector.multilingual import MultilingualModel # type: ignore
 
 load_dotenv()
-load_dotenv()
 
 class Assistant(Agent):
     def __init__(self) -> None:
@@ -21,8 +20,6 @@ class Assistant(Agent):
 
 async def entrypoint(ctx: agents.JobContext):
     session = AgentSession(
-        stt=deepgram.STT(model="nova-3", language="multi"),
-        llm=google.LLM(model="gemini-2.5-flash"),
         stt=deepgram.STT(model="nova-3", language="multi"),
         llm=google.LLM(model="gemini-2.5-flash"),
         tts=cartesia.TTS(model="sonic-2", voice="f786b574-daa5-4673-aa0c-cbe3e8534c02"),
@@ -34,7 +31,6 @@ async def entrypoint(ctx: agents.JobContext):
         room=ctx.room,
         agent=Assistant(),
         room_input_options=RoomInputOptions(
-            noise_cancellation=noise_cancellation.BVC(), 
             noise_cancellation=noise_cancellation.BVC(), 
         ),
     )
