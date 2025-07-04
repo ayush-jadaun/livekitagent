@@ -65,7 +65,6 @@ export default function App() {
 
   const router = useRouter();
 
-  // Start the audio session and check auth
   useEffect(() => {
     let start = async () => {
       await AudioSession.startAudioSession();
@@ -77,7 +76,6 @@ export default function App() {
     };
   }, []);
 
-  // Auto-start call when user is ready
   useEffect(() => {
     if (user && !isConnected && !autoStartAttempted && !loading) {
       setAutoStartAttempted(true);
@@ -93,7 +91,6 @@ export default function App() {
       if (session?.user) {
         setUser(session.user);
       } else {
-        // User is not authenticated - redirect to login
         router.navigate("/login");
         console.log("User not authenticated");
       }
@@ -165,10 +162,8 @@ export default function App() {
         throw new Error("No active session");
       }
 
-      // Check if user has existing room
       let room = await checkExistingRoom(session.access_token);
 
-      // If no room exists, create one
       if (!room) {
         console.log("No existing room found, creating new room...");
         room = await createRoom(session.access_token);
@@ -181,12 +176,11 @@ export default function App() {
       setRoomInfo(room);
       console.log("Room initialized:", room.room_name);
 
-      // Start the call session
       await startSession(session.access_token, room);
     } catch (error) {
       console.error("Initialize and start call error:", error);
       Alert.alert("Error", "Failed to initialize call");
-      setAutoStartAttempted(false); // Allow retry
+      setAutoStartAttempted(false);
     } finally {
       setLoading(false);
     }
@@ -251,27 +245,17 @@ export default function App() {
       console.error("Error ending session:", error);
     }
 
-    // Reset connection state
     setIsConnected(false);
     setCurrentSession(null);
     setToken("");
     setWsURL("");
     setAutoStartAttempted(false);
 
-    // Navigate to home page after ending call
     router.push("/");
   };
 
-  const handleLogout = async (): Promise<void> => {
-    try {
-      await supabase.auth.signOut();
-      setUser(null);
-      setRoomInfo(null);
-      setAutoStartAttempted(false);
-      router.navigate("/login");
-    } catch (error) {
-      console.error("Logout error:", error);
-    }
+  const handleCancel = async (): Promise<void> => {
+    await endSession();
   };
 
   const retryConnection = async (): Promise<void> => {
@@ -280,7 +264,6 @@ export default function App() {
     await initializeAndStartCall();
   };
 
-  // If no user, show message (in practice, you'd navigate to login)
   if (!user) {
     return (
       <View style={styles.setupContainer}>
@@ -291,7 +274,6 @@ export default function App() {
     );
   }
 
-  // If connected, show room view
   if (isConnected) {
     return (
       <LiveKitRoom
@@ -313,7 +295,6 @@ export default function App() {
     );
   }
 
-  // Loading/connecting screen - show while auto-starting call
   if (loading || (user && !autoStartAttempted)) {
     return (
       <View style={styles.setupContainer}>
@@ -335,15 +316,14 @@ export default function App() {
 
         <TouchableOpacity
           style={[styles.button, styles.logoutButton]}
-          onPress={handleLogout}
+          onPress={handleCancel}
         >
-          <Text style={styles.buttonText}>Cancel & Logout</Text>
+          <Text style={styles.buttonText}>Cancel</Text>
         </TouchableOpacity>
       </View>
     );
   }
 
-  // Fallback screen with manual retry (shown if auto-start failed)
   return (
     <View style={styles.setupContainer}>
       <Text style={styles.title}>Connection Failed</Text>
@@ -374,9 +354,9 @@ export default function App() {
 
       <TouchableOpacity
         style={[styles.button, styles.logoutButton]}
-        onPress={handleLogout}
+        onPress={handleCancel}
       >
-        <Text style={styles.buttonText}>Logout</Text>
+        <Text style={styles.buttonText}>Cancel</Text>
       </TouchableOpacity>
     </View>
   );
