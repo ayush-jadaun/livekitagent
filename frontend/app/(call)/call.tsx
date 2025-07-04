@@ -105,7 +105,7 @@ export default function App() {
   useEffect(() => {
     if (error) {
       const timeout = setTimeout(() => {
-        router.push("/");
+        router.replace("/");
       }, 2500);
       return () => clearTimeout(timeout);
     }
@@ -292,7 +292,7 @@ export default function App() {
     setWsURL("");
     setAutoStartAttempted(false);
 
-    router.push("/");
+    router.replace("/");
   };
 
   const handleCancel = async (): Promise<void> => {
