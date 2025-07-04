@@ -10,6 +10,7 @@ import {
   Alert,
   ActivityIndicator,
   RefreshControl,
+  Platform,
 } from "react-native";
 import { router } from "expo-router";
 import { supabase } from "../../lib/supabase";
@@ -103,7 +104,6 @@ export default function ProfileScreen() {
 
   const fetchUserProfile = async (userId: string, accessToken: string) => {
     try {
-      // Option 1: If you have a users table in Supabase
       const { data, error } = await supabase
         .from("users")
         .select("*")
@@ -111,7 +111,6 @@ export default function ProfileScreen() {
         .single();
 
       if (error && error.code !== "PGRST116") {
-        // PGRST116 is "not found"
         console.error("Error fetching user profile:", error);
         return;
       }
@@ -119,19 +118,6 @@ export default function ProfileScreen() {
       if (data) {
         setUserProfile(data);
       }
-
-      // Option 2: If you're using your backend API
-      // const response = await fetch(`${SERVER_URL}/api/users/profile`, {
-      //   headers: {
-      //     Authorization: `Bearer ${accessToken}`,
-      //     "Content-Type": "application/json",
-      //   },
-      // });
-
-      // if (response.ok) {
-      //   const profileData = await response.json();
-      //   setUserProfile(profileData);
-      // }
     } catch (error) {
       console.error("Error fetching user profile:", error);
     }
@@ -139,7 +125,6 @@ export default function ProfileScreen() {
 
   const fetchUserStats = async (userId: string, accessToken: string) => {
     try {
-      // Option 1: If you have sessions table in Supabase
       const { data: sessionsData, error: sessionsError } = await supabase
         .from("sessions")
         .select("*")
@@ -148,36 +133,20 @@ export default function ProfileScreen() {
       if (sessionsError) {
         console.error("Error fetching sessions:", sessionsError);
       } else if (sessionsData) {
-        // Calculate stats from sessions data
         const totalSessions = sessionsData.length;
         const totalMinutes = sessionsData.reduce((sum, session) => {
-          // Assuming you have a duration field in minutes
           return sum + (session.duration_minutes || 0);
         }, 0);
 
-        // Calculate current streak (simplified logic)
         const currentStreak = calculateStreak(sessionsData);
 
         setUserStats({
           totalSessions,
           currentStreak,
           totalMinutes,
-          favoriteActivity: "Meditation", // You can determine this from session data
+          favoriteActivity: "Meditation",
         });
       }
-
-      // Option 2: If you're using your backend API
-      // const response = await fetch(`${SERVER_URL}/api/users/stats`, {
-      //   headers: {
-      //     Authorization: `Bearer ${accessToken}`,
-      //     "Content-Type": "application/json",
-      //   },
-      // });
-
-      // if (response.ok) {
-      //   const statsData = await response.json();
-      //   setUserStats(statsData);
-      // }
     } catch (error) {
       console.error("Error fetching user stats:", error);
     }
@@ -223,7 +192,7 @@ export default function ProfileScreen() {
 
   const handleEditProfile = () => {
     // Navigate to edit profile screen
-    // router.push("/profile/edit");
+    router.push("/profile/edit");
   };
 
   const handleSettings = () => {
@@ -309,17 +278,19 @@ export default function ProfileScreen() {
 
   return (
     <SafeAreaView style={styles.container}>
-      <View style={styles.header}>
-        <Text style={styles.headerTitle}>Profile</Text>
-        <TouchableOpacity
-          style={styles.editButton}
-          onPress={handleEditProfile}
-          activeOpacity={0.7}
-        >
-          <Text style={styles.editText}>Edit</Text>
-        </TouchableOpacity>
+      {/* Use SafeAreaView for header to ensure it's below the camera/notch */}
+      <View style={styles.safeHeader}>
+        <View style={styles.header}>
+          <Text style={styles.headerTitle}>Profile</Text>
+          <TouchableOpacity
+            style={styles.editButton}
+            onPress={handleEditProfile}
+            activeOpacity={0.7}
+          >
+            <Text style={styles.editText}>Edit</Text>
+          </TouchableOpacity>
+        </View>
       </View>
-
       <ScrollView
         style={styles.content}
         showsVerticalScrollIndicator={false}
@@ -382,20 +353,13 @@ export default function ProfileScreen() {
 
         {/* Menu Options */}
         <View style={styles.menuSection}>
-          <TouchableOpacity
-            style={styles.menuItem}
-            activeOpacity={0.7}
-          >
+          <TouchableOpacity style={styles.menuItem} activeOpacity={0.7}>
             <Text style={styles.menuEmoji}>📊</Text>
             <Text style={styles.menuText}>My Progress</Text>
             <Text style={styles.menuArrow}>→</Text>
           </TouchableOpacity>
 
-          <TouchableOpacity
-            style={styles.menuItem}
-            activeOpacity={0.7}
-
-          >
+          <TouchableOpacity style={styles.menuItem} activeOpacity={0.7}>
             <Text style={styles.menuEmoji}>💭</Text>
             <Text style={styles.menuText}>Journal Entries</Text>
             <Text style={styles.menuArrow}>→</Text>
@@ -411,10 +375,7 @@ export default function ProfileScreen() {
             <Text style={styles.menuArrow}>→</Text>
           </TouchableOpacity>
 
-          <TouchableOpacity
-            style={styles.menuItem}
-            activeOpacity={0.7}
-          >
+          <TouchableOpacity style={styles.menuItem} activeOpacity={0.7}>
             <Text style={styles.menuEmoji}>🎯</Text>
             <Text style={styles.menuText}>Goals & Reminders</Text>
             <Text style={styles.menuArrow}>→</Text>
@@ -430,10 +391,7 @@ export default function ProfileScreen() {
             <Text style={styles.menuArrow}>→</Text>
           </TouchableOpacity>
 
-          <TouchableOpacity
-            style={styles.menuItem}
-            activeOpacity={0.7}
-          >
+          <TouchableOpacity style={styles.menuItem} activeOpacity={0.7}>
             <Text style={styles.menuEmoji}>💬</Text>
             <Text style={styles.menuText}>Help & Support</Text>
             <Text style={styles.menuArrow}>→</Text>
@@ -472,6 +430,11 @@ export default function ProfileScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
+    backgroundColor: COLORS.background,
+  },
+  safeHeader: {
+    // This ensures header starts below the notch/camera on all devices
+    paddingTop: Platform.OS === "android" ? 24 : 0,
     backgroundColor: COLORS.background,
   },
   loadingContainer: {

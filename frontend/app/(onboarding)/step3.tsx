@@ -6,12 +6,28 @@ import {
   StyleSheet,
   Dimensions,
 } from "react-native";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import LottieLoader from "../../components/LottieLoader";
 import { router } from "expo-router";
 
-const { width, height } = Dimensions.get("window");
+const { width } = Dimensions.get("window");
 
 export default function OnboardingStep3() {
+  // Mark onboarding as complete in AsyncStorage
+  const markOnboardingComplete = async () => {
+    try {
+      await AsyncStorage.setItem("onboarding_complete", "true");
+    } catch (e) {
+      // Optionally handle error
+      console.error("Failed to set onboarding complete flag:", e);
+    }
+  };
+
+  const handleGetStarted = async () => {
+    await markOnboardingComplete();
+    router.replace("/login");
+  };
+
   return (
     <View style={styles.container}>
       <View style={styles.animationContainer}>
@@ -38,7 +54,7 @@ export default function OnboardingStep3() {
       <View style={styles.buttonContainer}>
         <TouchableOpacity
           style={styles.getStartedButton}
-          onPress={() => router.replace("/login")}
+          onPress={handleGetStarted}
           activeOpacity={0.8}
         >
           <Text style={styles.getStartedButtonText}>Get Started</Text>

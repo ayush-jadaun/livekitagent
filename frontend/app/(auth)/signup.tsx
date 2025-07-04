@@ -13,22 +13,26 @@ import {
 import LottieLoader from "../../components/LottieLoader";
 import { supabase } from "../../lib/supabase";
 
+const SERVER_URL = "http://192.168.34.175:8000";
+
 // Colors based on color psychology for mental health apps
 const COLORS = {
-  background: "#F5E6F7", // soft pink-lavender (soothing and welcoming)
-  accent: "#A3D9C9", // mint green for health and growth
-  button: "#6C63FF", // calming lavender
-  inputBg: "#FAF7FF", // very light lavender
+  background: "#F5E6F7",
+  accent: "#A3D9C9",
+  button: "#6C63FF",
+  inputBg: "#FAF7FF",
   inputBorder: "#D1C4E9",
-  text: "#22223B", // deep blue
-  link: "#1976D2", // blue for trust
-  error: "#E57373", // gentle red
+  text: "#22223B",
+  link: "#1976D2",
+  error: "#E57373",
   shadow: "#D1C4E9",
 };
 
 export default function SignupScreen() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [name, setName] = useState("");
+  const [age, setAge] = useState("");
   const [loading, setLoading] = useState(false);
 
   // If already logged in, redirect to home page
@@ -43,16 +47,76 @@ export default function SignupScreen() {
   }, []);
 
   async function handleSignup() {
+    if (!name.trim()) {
+      Alert.alert("Error", "Please enter your name");
+      return;
+    }
+    if (!age.trim() || isNaN(Number(age))) {
+      Alert.alert("Error", "Please enter a valid age");
+      return;
+    }
+
     setLoading(true);
-    const { error } = await supabase.auth.signUp({ email, password });
-    setLoading(false);
-    if (error) {
-      Alert.alert("Signup failed", error.message);
-    } else {
+    const { error: signUpError } = await supabase.auth.signUp({
+      email,
+      password,
+    });
+
+    if (signUpError) {
+      setLoading(false);
+      Alert.alert("Signup failed", signUpError.message);
+      return;
+    }
+
+    // After signup, get the session and call user setup
+    const {
+      data: { session },
+      error: sessionError,
+    } = await supabase.auth.getSession();
+
+    if (sessionError || !session) {
+      setLoading(false);
       Alert.alert(
-        "Signup successful! Check your email to confirm your account."
+        "Error",
+        "Signup successful, but could not authenticate session. Please login."
       );
       router.push("/login");
+      return;
+    }
+
+    try {
+      // Call your user setup endpoint
+      const response = await fetch(`${SERVER_URL}/api/users/setup`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${session.access_token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          name: name.trim(),
+          age: parseInt(age),
+        }),
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Server error: ${response.status} - ${errorText}`);
+      }
+
+      Alert.alert(
+        "Signup successful!",
+        "Check your email to confirm your account. Profile setup complete!"
+      );
+      router.push("/login");
+    } catch (error) {
+      let message = "Signup succeeded, but profile setup failed";
+      if (error instanceof Error) {
+        message += `: ${error.message}`;
+      }
+      Alert.alert("Error", message);
+      router.push("/login");
+    } finally {
+      setLoading(false);
     }
   }
 
@@ -74,6 +138,24 @@ export default function SignupScreen() {
           </Text>
         </View>
         <View style={styles.inputContainer}>
+          <Text style={styles.label}>Name</Text>
+          <TextInput
+            style={styles.input}
+            placeholder="Enter your name"
+            placeholderTextColor="#7a8fa6"
+            autoCapitalize="words"
+            onChangeText={setName}
+            value={name}
+          />
+          <Text style={styles.label}>Age</Text>
+          <TextInput
+            style={styles.input}
+            placeholder="Enter your age"
+            placeholderTextColor="#7a8fa6"
+            keyboardType="numeric"
+            onChangeText={setAge}
+            value={age}
+          />
           <Text style={styles.label}>Email</Text>
           <TextInput
             style={styles.input}
