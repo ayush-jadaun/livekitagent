@@ -435,6 +435,11 @@ async def livekit_webhook(request: Request):
             status_code=500,
             content={"error": "Webhook handling failed"}
         )
+@app.get("/ping")
+async def ping():
+    return {"message": "pong"}
+
+
 
 # Startup and shutdown events
 @asynccontextmanager
