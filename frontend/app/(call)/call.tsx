@@ -30,7 +30,7 @@ import { useRouter } from "expo-router";
 registerGlobals();
 
 const { width, height } = Dimensions.get("window");
-const SERVER_URL = "http://192.168.34.175:8000";
+const SERVER_URL = "http://10.167.29.175:8000";
 
 interface RoomInfo {
   room_id: string;
@@ -61,7 +61,8 @@ export default function App() {
   );
   const [roomInfo, setRoomInfo] = useState<RoomInfo | null>(null);
   const [user, setUser] = useState<User | null>(null);
-  const [autoStartAttempted, setAutoStartAttempted] = useState<boolean>(false);
+  // REMOVE this state
+  // const [autoStartAttempted, setAutoStartAttempted] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
 
   const router = useRouter();
@@ -94,12 +95,13 @@ export default function App() {
     };
   }, []);
 
-  useEffect(() => {
-    if (user && !isConnected && !autoStartAttempted && !loading && !error) {
-      setAutoStartAttempted(true);
-      initializeAndStartCall();
-    }
-  }, [user, isConnected, autoStartAttempted, loading, error]);
+  // REMOVE THIS AUTO-CALL LOGIC!
+  // useEffect(() => {
+  //   if (user && !isConnected && !autoStartAttempted && !loading && !error) {
+  //     setAutoStartAttempted(true);
+  //     initializeAndStartCall();
+  //   }
+  // }, [user, isConnected, autoStartAttempted, loading, error]);
 
   // After showing error, push user to homepage after 2-3 seconds
   useEffect(() => {
@@ -290,18 +292,20 @@ export default function App() {
     setCurrentSession(null);
     setToken("");
     setWsURL("");
-    setAutoStartAttempted(false);
+    // setAutoStartAttempted(false); // REMOVE this line
 
-    router.replace("/");
+    // Do not auto-replace to "/" after end. Let user choose to reconnect or leave.
+    // router.replace("/");
   };
 
   const handleCancel = async (): Promise<void> => {
     await endSession();
+    router.replace("/"); // If you want to send user to home on cancel
   };
 
   const retryConnection = async (): Promise<void> => {
     setError(null);
-    setAutoStartAttempted(false);
+    // setAutoStartAttempted(false); // REMOVE this line
     setLoading(false);
     await initializeAndStartCall();
   };
@@ -362,7 +366,37 @@ export default function App() {
     );
   }
 
-  if (loading || (user && !autoStartAttempted)) {
+  // Show a "Start Call" button if not connected and not loading
+  if (!isConnected && !loading) {
+    return (
+      <View style={styles.setupContainer}>
+        <Text style={styles.title}>Ready to join?</Text>
+        {roomInfo && (
+          <View style={styles.roomInfo}>
+            <Text style={styles.roomText}>Your Room: {roomInfo.room_name}</Text>
+            <Text style={styles.statusText}>
+              Status: {roomInfo.room_condition === "on" ? "Active" : "Ready"}
+            </Text>
+          </View>
+        )}
+        <TouchableOpacity
+          style={[styles.button, styles.callButton]}
+          onPress={initializeAndStartCall}
+          disabled={loading}
+        >
+          <Text style={styles.buttonText}>Start Call</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.button, styles.logoutButton]}
+          onPress={handleCancel}
+        >
+          <Text style={styles.buttonText}>Cancel</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
+
+  if (loading) {
     return (
       <View style={styles.setupContainer}>
         <Text style={styles.title}>Connecting...</Text>
@@ -391,42 +425,7 @@ export default function App() {
     );
   }
 
-  return (
-    <View style={styles.setupContainer}>
-      <Text style={styles.title}>Connection Failed</Text>
-      <Text style={styles.subtitle}>Logged in as: {user.email}</Text>
-
-      {roomInfo && (
-        <View style={styles.roomInfo}>
-          <Text style={styles.roomText}>Your Room: {roomInfo.room_name}</Text>
-          <Text style={styles.statusText}>
-            Status: {roomInfo.room_condition === "on" ? "Active" : "Ready"}
-          </Text>
-        </View>
-      )}
-
-      <Text style={styles.note}>Auto-connect failed. Try again:</Text>
-
-      <TouchableOpacity
-        style={[styles.button, styles.callButton]}
-        onPress={retryConnection}
-        disabled={loading}
-      >
-        {loading ? (
-          <ActivityIndicator color="white" />
-        ) : (
-          <Text style={styles.buttonText}>Retry Connection</Text>
-        )}
-      </TouchableOpacity>
-
-      <TouchableOpacity
-        style={[styles.button, styles.logoutButton]}
-        onPress={handleCancel}
-      >
-        <Text style={styles.buttonText}>Cancel</Text>
-      </TouchableOpacity>
-    </View>
-  );
+  return null;
 }
 
 interface RoomViewProps {
