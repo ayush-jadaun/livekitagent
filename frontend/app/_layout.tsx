@@ -1,7 +1,7 @@
 import React, { useEffect } from "react";
 import { Stack, router, usePathname } from "expo-router";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-
+import AuthWrapper from "@/components/AuthWrapper";
 export default function RootLayout() {
   const pathname = usePathname();
 
@@ -18,8 +18,10 @@ export default function RootLayout() {
   }, [pathname]);
 
   return (
-    <Stack screenOptions={{ headerShown: false }}>
-      <Stack.Screen name="(tabs)" />
-    </Stack>
+    <AuthWrapper>
+      <Stack screenOptions={{ headerShown: false }}>
+        <Stack.Screen name="(tabs)" />
+      </Stack>
+    </AuthWrapper>
   );
 }
