@@ -11,6 +11,7 @@ import {
   SafeAreaView,
   StatusBar,
   Dimensions,
+  BackHandler,
 } from "react-native";
 import { useState, useEffect } from "react";
 import {
@@ -26,6 +27,7 @@ import { Track } from "livekit-client";
 import { supabase } from "../../lib/supabase";
 import { User } from "@supabase/supabase-js";
 import { useRouter } from "expo-router";
+import { useFocusEffect } from "@react-navigation/native";
 
 registerGlobals();
 
@@ -61,11 +63,47 @@ export default function App() {
   );
   const [roomInfo, setRoomInfo] = useState<RoomInfo | null>(null);
   const [user, setUser] = useState<User | null>(null);
-  // REMOVE this state
-  // const [autoStartAttempted, setAutoStartAttempted] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
 
   const router = useRouter();
+
+  // Handle back button press when in call
+  useFocusEffect(
+    React.useCallback(() => {
+      const onBackPress = () => {
+        if (isConnected) {
+          Alert.alert(
+            "End Call",
+            "Are you sure you want to end the call and go back?",
+            [
+              {
+                text: "Cancel",
+                onPress: () => null,
+                style: "cancel",
+              },
+              {
+                text: "End Call",
+                onPress: async () => {
+                  await endSession();
+                  router.back();
+                },
+                style: "destructive",
+              },
+            ]
+          );
+          return true; // Prevent default back action
+        }
+        return false; // Allow default back action
+      };
+
+      const subscription = BackHandler.addEventListener(
+        "hardwareBackPress",
+        onBackPress
+      );
+
+      return () => subscription.remove();
+    }, [isConnected])
+  );
 
   // Check if the server is online (simple /ping endpoint or fallback to base url)
   const checkServerOnline = async (): Promise<boolean> => {
@@ -94,14 +132,6 @@ export default function App() {
       AudioSession.stopAudioSession();
     };
   }, []);
-
-  // REMOVE THIS AUTO-CALL LOGIC!
-  // useEffect(() => {
-  //   if (user && !isConnected && !autoStartAttempted && !loading && !error) {
-  //     setAutoStartAttempted(true);
-  //     initializeAndStartCall();
-  //   }
-  // }, [user, isConnected, autoStartAttempted, loading, error]);
 
   // After showing error, push user to homepage after 2-3 seconds
   useEffect(() => {
@@ -292,10 +322,6 @@ export default function App() {
     setCurrentSession(null);
     setToken("");
     setWsURL("");
-    // setAutoStartAttempted(false); // REMOVE this line
-
-    // Do not auto-replace to "/" after end. Let user choose to reconnect or leave.
-    // router.replace("/");
   };
 
   const handleCancel = async (): Promise<void> => {
@@ -305,7 +331,6 @@ export default function App() {
 
   const retryConnection = async (): Promise<void> => {
     setError(null);
-    // setAutoStartAttempted(false); // REMOVE this line
     setLoading(false);
     await initializeAndStartCall();
   };
