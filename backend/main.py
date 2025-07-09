@@ -257,7 +257,7 @@ async def start_session(
         # Start (or restart) agent process for this room
         if room_name in active_agents:
             stop_agent(room_name)
-        trigger_agent_connection(room_name)
+        # trigger_agent_connection(room_name)
         return SessionResponse(
             session_id=session_id,
             room_name=room_name,

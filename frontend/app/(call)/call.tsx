@@ -32,7 +32,7 @@ import { useFocusEffect } from "@react-navigation/native";
 registerGlobals();
 
 const { width, height } = Dimensions.get("window");
-const SERVER_URL = "http://10.167.29.175:8000";
+const SERVER_URL = "http://10.140.228.175:8000";
 
 interface RoomInfo {
   room_id: string;
@@ -64,6 +64,7 @@ export default function App() {
   const [roomInfo, setRoomInfo] = useState<RoomInfo | null>(null);
   const [user, setUser] = useState<User | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [shouldAutoStart, setShouldAutoStart] = useState<boolean>(true);
 
   const router = useRouter();
 
@@ -132,6 +133,13 @@ export default function App() {
       AudioSession.stopAudioSession();
     };
   }, []);
+
+  // Auto-start call when user is authenticated
+  useEffect(() => {
+    if (user && !isConnected && !loading && !error && shouldAutoStart) {
+      initializeAndStartCall();
+    }
+  }, [user, isConnected, loading, error, shouldAutoStart]);
 
   // After showing error, push user to homepage after 2-3 seconds
   useEffect(() => {
@@ -292,6 +300,7 @@ export default function App() {
 
   const endSession = async (): Promise<void> => {
     if (!currentSession || !user) return;
+    setShouldAutoStart(false);
 
     try {
       const {
@@ -313,6 +322,7 @@ export default function App() {
       if (response.ok) {
         console.log("Session ended successfully");
       }
+      router.replace("/")
     } catch (error) {
       // Don't show error if server is offline on endSession
       console.error("Error ending session:", error);
@@ -325,20 +335,21 @@ export default function App() {
   };
 
   const handleCancel = async (): Promise<void> => {
+    setShouldAutoStart(false); // Prevent auto-restart
     await endSession();
-    router.replace("/"); // If you want to send user to home on cancel
   };
 
   const retryConnection = async (): Promise<void> => {
     setError(null);
     setLoading(false);
+    setShouldAutoStart(true); // Allow auto-start for retry
     await initializeAndStartCall();
   };
 
   if (!user) {
     return (
       <View style={styles.setupContainer}>
-        <Text style={styles.title}>LiveKit Call</Text>
+        <Text style={styles.title}>Rasmalai</Text>
         <Text style={styles.subtitle}>Please log in to continue</Text>
         <Text style={styles.note}>Redirecting to login...</Text>
       </View>
@@ -391,46 +402,19 @@ export default function App() {
     );
   }
 
-  // Show a "Start Call" button if not connected and not loading
-  if (!isConnected && !loading) {
-    return (
-      <View style={styles.setupContainer}>
-        <Text style={styles.title}>Ready to join?</Text>
-        {roomInfo && (
-          <View style={styles.roomInfo}>
-            <Text style={styles.roomText}>Your Room: {roomInfo.room_name}</Text>
-            <Text style={styles.statusText}>
-              Status: {roomInfo.room_condition === "on" ? "Active" : "Ready"}
-            </Text>
-          </View>
-        )}
-        <TouchableOpacity
-          style={[styles.button, styles.callButton]}
-          onPress={initializeAndStartCall}
-          disabled={loading}
-        >
-          <Text style={styles.buttonText}>Start Call</Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={[styles.button, styles.logoutButton]}
-          onPress={handleCancel}
-        >
-          <Text style={styles.buttonText}>Cancel</Text>
-        </TouchableOpacity>
-      </View>
-    );
-  }
-
+  // Loading state - show while connecting
   if (loading) {
     return (
       <View style={styles.setupContainer}>
-        <Text style={styles.title}>Connecting...</Text>
+        <Text style={styles.title}>🔥 Connecting...</Text>
         <Text style={styles.subtitle}>
-          {roomInfo ? "Starting your call" : "Setting up your room"}
+          {roomInfo
+            ? "Starting your vent session"
+            : "Setting up your safe space"}
         </Text>
         <ActivityIndicator
           size="large"
-          color="#007AFF"
+          color="#E53E3E"
           style={{ marginTop: 20 }}
         />
 
@@ -474,7 +458,7 @@ const RoomView: React.FC<RoomViewProps> = ({
     } else {
       return (
         <View style={styles.participantView}>
-          <Text style={styles.placeholderText}>No Video</Text>
+          <Text style={styles.placeholderText}>🔥 Vent Space Active</Text>
         </View>
       );
     }
@@ -487,10 +471,11 @@ const RoomView: React.FC<RoomViewProps> = ({
       {/* Header */}
       <View style={styles.callHeader}>
         <View style={styles.callHeaderContent}>
-          <Text style={styles.callRoomTitle}>{roomName}</Text>
+          <Text style={styles.callRoomTitle}>🔥 {roomName}</Text>
+          <Text style={styles.callSubtitle}>Your safe space to vent</Text>
           {sessionId && (
             <Text style={styles.callSessionText}>
-              ID: {sessionId.substring(0, 8)}...
+              Session: {sessionId.substring(0, 8)}...
             </Text>
           )}
         </View>
@@ -516,7 +501,7 @@ const RoomView: React.FC<RoomViewProps> = ({
             onPress={onDisconnect}
             activeOpacity={0.8}
           >
-            <Text style={styles.endCallText}>End Call</Text>
+            <Text style={styles.endCallText}>End Session</Text>
           </TouchableOpacity>
         </View>
       </View>
@@ -530,7 +515,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     alignItems: "center",
     padding: 20,
-    backgroundColor: "#f5f5f5",
+    backgroundColor: "#FFE6E6",
   },
   container: {
     flex: 1,
@@ -540,7 +525,7 @@ const styles = StyleSheet.create({
     fontSize: 24,
     fontWeight: "bold",
     marginBottom: 10,
-    color: "#333",
+    color: "#E53E3E",
     textAlign: "center",
   },
   subtitle: {
@@ -559,7 +544,7 @@ const styles = StyleSheet.create({
     marginBottom: 10,
   },
   callButton: {
-    backgroundColor: "#34C759",
+    backgroundColor: "#E53E3E",
     paddingHorizontal: 40,
     paddingVertical: 20,
   },
@@ -620,9 +605,16 @@ const styles = StyleSheet.create({
     fontWeight: "bold",
     textAlign: "center",
   },
+  callSubtitle: {
+    color: "#FF6B6B",
+    fontSize: 14,
+    marginTop: 4,
+    textAlign: "center",
+    fontStyle: "italic",
+  },
   callSessionText: {
     color: "#ccc",
-    fontSize: 14,
+    fontSize: 12,
     marginTop: 4,
     textAlign: "center",
   },
@@ -642,7 +634,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   endCallButton: {
-    backgroundColor: "#FF3B30",
+    backgroundColor: "#E53E3E",
     paddingHorizontal: 40,
     paddingVertical: 15,
     borderRadius: 25,
@@ -680,7 +672,7 @@ const styles = StyleSheet.create({
     borderColor: "#555",
   },
   placeholderText: {
-    color: "#ccc",
+    color: "#FF6B6B",
     fontSize: 16,
     fontWeight: "500",
   },
