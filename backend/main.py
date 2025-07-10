@@ -255,8 +255,8 @@ async def start_session(
              room_create=True,
          ))
         # Start (or restart) agent process for this room
-        if room_name in active_agents:
-            stop_agent(room_name)
+        # if room_name in active_agents:
+        #     stop_agent(room_name)
         # trigger_agent_connection(room_name)
         return SessionResponse(
             session_id=session_id,

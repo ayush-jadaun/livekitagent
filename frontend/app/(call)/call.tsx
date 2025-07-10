@@ -322,7 +322,7 @@ export default function App() {
       if (response.ok) {
         console.log("Session ended successfully");
       }
-      router.replace("/")
+      router.replace("/");
     } catch (error) {
       // Don't show error if server is offline on endSession
       console.error("Error ending session:", error);
@@ -448,62 +448,57 @@ const RoomView: React.FC<RoomViewProps> = ({
   roomName,
   sessionId,
 }) => {
+  const [isCallActive, setIsCallActive] = useState(true);
   const tracks = useTracks([Track.Source.Camera]);
 
-  const renderTrack: ListRenderItem<TrackReferenceOrPlaceholder> = ({
-    item,
-  }) => {
-    if (isTrackReference(item)) {
-      return <VideoTrack trackRef={item} style={styles.participantView} />;
-    } else {
-      return (
-        <View style={styles.participantView}>
-          <Text style={styles.placeholderText}>🔥 Vent Space Active</Text>
-        </View>
-      );
-    }
+  const handleEndCall = () => {
+    setIsCallActive(false);
+    onDisconnect();
   };
 
+
   return (
-    <SafeAreaView style={styles.callContainer}>
-      <StatusBar barStyle="light-content" backgroundColor="#1a1a1a" />
+    <SafeAreaView style={styles.metalCallContainer}>
+      <StatusBar barStyle="light-content" backgroundColor="#0a0a0a" />
 
-      {/* Header */}
-      <View style={styles.callHeader}>
-        <View style={styles.callHeaderContent}>
-          <Text style={styles.callRoomTitle}>🔥 {roomName}</Text>
-          <Text style={styles.callSubtitle}>Your safe space to vent</Text>
-          {sessionId && (
-            <Text style={styles.callSessionText}>
-              Session: {sessionId.substring(0, 8)}...
-            </Text>
-          )}
+      {/* Main Content */}
+      <View style={styles.metalCallContent}>
+        {/* Logo Space */}
+        <View style={styles.logoContainer}>
+          {/* Add your logo component here */}
+          <View style={styles.logoPlaceholder}>
+            <Text style={styles.logoText}>LOGO</Text>
+          </View>
         </View>
-      </View>
 
-      {/* Main content area */}
-      <View style={styles.callContent}>
-        <FlatList
-          data={tracks}
-          renderItem={renderTrack}
-          keyExtractor={(item, index) => index.toString()}
-          style={styles.tracksList}
-          contentContainerStyle={styles.tracksContainer}
-          showsVerticalScrollIndicator={false}
-        />
-      </View>
+        {/* R_AI Text */}
+        <View style={styles.brandContainer}>
+          <Text style={styles.brandText}>Rasmalai_AI</Text>
+        </View>
 
-      {/* Footer with controls */}
-      <View style={styles.callFooter}>
-        <View style={styles.callControls}>
+        {/* Spacer */}
+        <View style={styles.spacer} />
+
+        {/* Control Button */}
+        <View style={styles.controlContainer}>
           <TouchableOpacity
-            style={styles.endCallButton}
-            onPress={onDisconnect}
+            style={[
+              styles.controlButton,
+              styles.endCallButton
+            ]}
+            onPress={ handleEndCall }
             activeOpacity={0.8}
           >
-            <Text style={styles.endCallText}>End Session</Text>
+            <View style={styles.controlButtonInner}>
+              <Text style={styles.controlButtonText}>
+                { "END"}
+              </Text>
+            </View>
           </TouchableOpacity>
         </View>
+
+        {/* Bottom Spacer */}
+        <View style={styles.bottomSpacer} />
       </View>
     </SafeAreaView>
   );
@@ -584,7 +579,110 @@ const styles = StyleSheet.create({
     marginBottom: 10,
     fontStyle: "italic",
   },
-  // Call screen styles
+
+  // New Metal Call Screen Styles
+  metalCallContainer: {
+    flex: 1,
+    backgroundColor: "#0a0a0a", // Deep black metal background
+  },
+  metalCallContent: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "flex-start",
+    paddingTop: 60,
+  },
+  logoContainer: {
+    marginTop: 40,
+    marginBottom: 30,
+    alignItems: "center",
+  },
+  logoPlaceholder: {
+    width: 120,
+    height: 120,
+    backgroundColor: "#1a1a1a",
+    borderRadius: 60,
+    justifyContent: "center",
+    alignItems: "center",
+    borderWidth: 2,
+    borderColor: "#333",
+    shadowColor: "#000",
+    shadowOffset: {
+      width: 0,
+      height: 4,
+    },
+    shadowOpacity: 0.3,
+    shadowRadius: 5,
+    elevation: 8,
+  },
+  logoText: {
+    color: "#666",
+    fontSize: 16,
+    fontWeight: "bold",
+    letterSpacing: 2,
+  },
+  brandContainer: {
+    marginBottom: 40,
+  },
+  brandText: {
+    fontSize:30,
+    fontWeight: "300",
+    color: "#ffffff",
+    letterSpacing: 8,
+    textAlign: "center",
+    fontFamily: "monospace",
+    textShadowColor: "#000",
+    textShadowOffset: { width: 2, height: 2 },
+    textShadowRadius: 4,
+  },
+  spacer: {
+    flex: 1,
+  },
+  controlContainer: {
+    alignItems: "center",
+    marginBottom: 80,
+  },
+  controlButton: {
+    width: 140,
+    height: 140,
+    borderRadius: 70,
+    justifyContent: "center",
+    alignItems: "center",
+    shadowColor: "#000",
+    shadowOffset: {
+      width: 0,
+      height: 8,
+    },
+    shadowOpacity: 0.4,
+    shadowRadius: 12,
+    elevation: 15,
+  },
+  startCallButton: {
+    backgroundColor: "#1a1a1a",
+    borderWidth: 3,
+    borderColor: "#00ff00",
+  },
+  controlButtonInner: {
+    width: 110,
+    height: 110,
+    borderRadius: 55,
+    backgroundColor: "#0a0a0a",
+    justifyContent: "center",
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: "#333",
+  },
+  controlButtonText: {
+    color: "#ffffff",
+    fontSize: 16,
+    fontWeight: "bold",
+    letterSpacing: 2,
+    textAlign: "center",
+  },
+  bottomSpacer: {
+    height: 60,
+  },
+
+  // Legacy styles (keeping for other screens)
   callContainer: {
     flex: 1,
     backgroundColor: "#1a1a1a",
@@ -637,7 +735,7 @@ const styles = StyleSheet.create({
     backgroundColor: "#E53E3E",
     paddingHorizontal: 40,
     paddingVertical: 15,
-    borderRadius: 25,
+    borderRadius: 1200,
     minWidth: 140,
     alignItems: "center",
     shadowColor: "#000",
