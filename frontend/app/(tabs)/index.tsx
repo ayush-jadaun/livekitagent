@@ -77,7 +77,7 @@ export default function HomeScreen() {
     <View style={styles.container}>
       {/* Header */}
       <View style={styles.header}>
-        <Text style={styles.title}>Rasmalai</Text>
+        <Text style={styles.title}>Rasmlai</Text>
         <Text style={styles.subtitle}>Your safe space to release and heal</Text>
       </View>
 
@@ -101,7 +101,7 @@ export default function HomeScreen() {
             <Text style={styles.mainButtonEmoji}>🔥</Text>
             <Text style={styles.mainButtonText}>Vent It Out</Text>
             <Text style={styles.mainButtonSubtext}>
-              Release your anger safely
+              Spill your guts 
             </Text>
           </View>
         </TouchableOpacity>
@@ -110,7 +110,7 @@ export default function HomeScreen() {
       {/* Supportive Message */}
       <View style={styles.supportiveMessage}>
         <Text style={styles.supportiveText}>
-          ❤️‍🔥 Transform your anger into strength. We're here to listen
+          ❤️‍🔥 Transform your emotions into strength. We're here to listen
         </Text>
       </View>
     </View>
