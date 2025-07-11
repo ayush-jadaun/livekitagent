@@ -13,7 +13,7 @@ import {
 import LottieLoader from "../../components/LottieLoader";
 import { supabase } from "../../lib/supabase";
 
-const SERVER_URL = "http://10.140.228.175:8000";
+const SERVER_URL = process.env.EXPO_PUBLIC_SERVER_URL;
 
 // Colors based on color psychology for mental health apps
 const COLORS = {
@@ -78,7 +78,7 @@ export default function SignupScreen() {
       setLoading(false);
       Alert.alert(
         "Error",
-        "Signup successful, but could not authenticate session. Please login."
+        "Signup successful, Please check your email for verification."
       );
       router.push("/login");
       return;

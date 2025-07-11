@@ -28,11 +28,15 @@ import { supabase } from "../../lib/supabase";
 import { User } from "@supabase/supabase-js";
 import { useRouter } from "expo-router";
 import { useFocusEffect } from "@react-navigation/native";
+import { Image } from "react-native";
 
 registerGlobals();
 
 const { width, height } = Dimensions.get("window");
-const SERVER_URL = "http://10.140.228.175:8000";
+const SERVER_URL = process.env.EXPO_PUBLIC_SERVER_URL;
+
+
+console.log(SERVER_URL)
 
 interface RoomInfo {
   room_id: string;
@@ -465,15 +469,16 @@ const RoomView: React.FC<RoomViewProps> = ({
       <View style={styles.metalCallContent}>
         {/* Logo Space */}
         <View style={styles.logoContainer}>
-          {/* Add your logo component here */}
-          <View style={styles.logoPlaceholder}>
-            <Text style={styles.logoText}>LOGO</Text>
-          </View>
+          <Image
+            source={require("../../assets/images/rsml.png")}
+            style={styles.logoPlaceholder}
+          />
+  
         </View>
 
         {/* R_AI Text */}
         <View style={styles.brandContainer}>
-          <Text style={styles.brandText}>Rasmalai</Text>
+          <Text style={styles.brandText}>Rasmlai</Text>
         </View>
 
         {/* Spacer */}
@@ -482,17 +487,12 @@ const RoomView: React.FC<RoomViewProps> = ({
         {/* Control Button */}
         <View style={styles.controlContainer}>
           <TouchableOpacity
-            style={[
-              styles.controlButton,
-              styles.endCallButton
-            ]}
-            onPress={ handleEndCall }
+            style={[styles.controlButton, styles.endCallButton]}
+            onPress={handleEndCall}
             activeOpacity={0.8}
           >
             <View style={styles.controlButtonInner}>
-              <Text style={styles.controlButtonText}>
-                { "END"}
-              </Text>
+              <Text style={styles.controlButtonText}>{"END"}</Text>
             </View>
           </TouchableOpacity>
         </View>
@@ -599,19 +599,19 @@ const styles = StyleSheet.create({
   logoPlaceholder: {
     width: 120,
     height: 120,
-    backgroundColor: "#1a1a1a",
+    backgroundColor: "transparent",
     borderRadius: 60,
     justifyContent: "center",
     alignItems: "center",
-    borderWidth: 2,
-    borderColor: "#333",
-    shadowColor: "#000",
-    shadowOffset: {
-      width: 0,
-      height: 4,
-    },
-    shadowOpacity: 0.3,
-    shadowRadius: 5,
+    // borderWidth: 2,
+    // borderColor: "#333",
+    // shadowColor: "#000",
+    // shadowOffset: {
+    //   width: 0,
+    //   height: 4,
+    // },
+    // shadowOpacity: 0.3,
+    // shadowRadius: 5,
     elevation: 8,
   },
   logoText: {

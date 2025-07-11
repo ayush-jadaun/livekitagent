@@ -73,8 +73,7 @@ export default function LoginScreen() {
           />
           <Text style={styles.title}>Welcome Back</Text>
           <Text style={styles.subtitle}>
-            We're glad to see you again! Log in to continue your mindful
-            journey.
+           Your journey awaits, login to continue.
           </Text>
         </View>
         <View style={styles.inputContainer}>
@@ -101,11 +100,11 @@ export default function LoginScreen() {
             value={password}
             returnKeyType="done"
           />
-          <View style={{ alignItems: "flex-end", marginTop: 8 }}>
+          {/* <View style={{ alignItems: "flex-end", marginTop: 8 }}>
             <Link href="/forget-password" style={styles.forgotLink}>
               Forgot Password?
             </Link>
-          </View>
+          </View> */}
         </View>
         <TouchableOpacity
           style={[styles.button, loading && { backgroundColor: "#A3A0FB" }]}

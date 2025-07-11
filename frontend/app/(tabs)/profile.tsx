@@ -11,6 +11,7 @@ import {
   ActivityIndicator,
   RefreshControl,
   Platform,
+  Linking
 } from "react-native";
 import { router } from "expo-router";
 import { supabase } from "../../lib/supabase";
@@ -144,7 +145,7 @@ export default function ProfileScreen() {
           totalSessions,
           currentStreak,
           totalMinutes,
-          favoriteActivity: "Meditation",
+          favoriteActivity: "Meditation (Coming soon )",
         });
       }
     } catch (error) {
@@ -200,7 +201,7 @@ export default function ProfileScreen() {
   };
 
   const handleLogout = async () => {
-    Alert.alert("Sign Out", "Are you sure you want to sign out?", [
+    Alert.alert("Logout", "Are you sure you want to logout?", [
       {
         text: "Cancel",
         style: "cancel",
@@ -214,7 +215,7 @@ export default function ProfileScreen() {
             const { error } = await supabase.auth.signOut();
 
             if (error) {
-              Alert.alert("Error", "Failed to sign out. Please try again.");
+              Alert.alert("Error", "Failed to logout. Please try again.");
               console.error("Logout error:", error);
             } else {
               // Successfully signed out
@@ -238,6 +239,11 @@ export default function ProfileScreen() {
       month: "long",
     });
   };
+
+  const handleForm= ()=>{
+    Linking.openURL("https://forms.gle/iT9s9ivSbDs6MDuX7");
+
+  }
 
   const getUserDisplayName = () => {
     if (userProfile?.name) {
@@ -385,9 +391,9 @@ export default function ProfileScreen() {
             <Text style={styles.menuArrow}>→</Text>
           </TouchableOpacity> */}
 
-          <TouchableOpacity style={styles.menuItem} activeOpacity={0.7}>
+          <TouchableOpacity style={styles.menuItem} activeOpacity={0.7} onPress={handleForm}>
             <Text style={styles.menuEmoji}>💬</Text>
-            <Text style={styles.menuText}>Help & Support</Text>
+            <Text style={styles.menuText}>Feedback form!</Text>
             <Text style={styles.menuArrow}>→</Text>
           </TouchableOpacity>
         </View>
