@@ -349,7 +349,7 @@ export default function App() {
   if (!user) {
     return (
       <View style={styles.setupContainer}>
-        <Text style={styles.title}>Rasmalai</Text>
+        <Text style={styles.title}>Rasmlai</Text>
         <Text style={styles.subtitle}>Please log in to continue</Text>
         <Text style={styles.note}>Redirecting to login...</Text>
       </View>
@@ -473,7 +473,7 @@ const RoomView: React.FC<RoomViewProps> = ({
 
         {/* R_AI Text */}
         <View style={styles.brandContainer}>
-          <Text style={styles.brandText}>Rasmalai_AI</Text>
+          <Text style={styles.brandText}>Rasmalai</Text>
         </View>
 
         {/* Spacer */}

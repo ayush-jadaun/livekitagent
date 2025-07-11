@@ -13,7 +13,7 @@ import {
 import LottieLoader from "../../components/LottieLoader";
 import { supabase } from "../../lib/supabase";
 
-const SERVER_URL = "http://192.168.34.175:8000";
+const SERVER_URL = "http://10.140.228.175:8000";
 
 // Colors based on color psychology for mental health apps
 const COLORS = {

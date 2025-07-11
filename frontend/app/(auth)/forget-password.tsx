@@ -40,7 +40,7 @@ export default function ForgetPasswordScreen() {
 
     setLoading(true);
     const { error } = await supabase.auth.resetPasswordForEmail(email, {
-      redirectTo: "/reset-password", // Replace with your app's deep link
+      redirectTo: "frontend://reset-password",
     });
     setLoading(false);
 

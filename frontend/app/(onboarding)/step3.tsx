@@ -38,15 +38,20 @@ export default function OnboardingStep3() {
       </View>
 
       <View style={styles.contentContainer}>
-        <Text style={styles.title}>Mindfulness Tools</Text>
+        <Text style={styles.title}>Angry?</Text>
+        <Text style={styles.title}>Anxious?</Text>
+        <Text style={styles.title}>or just feeling meh!!?</Text>
         <Text style={styles.subtitle}>Transform stress into calm</Text>
 
         <View style={styles.textContainer}>
-          <Text style={styles.description}>
-            Guided meditations, breathing exercises, and gentle reminders.
-          </Text>
+          {/* <Text style={styles.description}>
+              
+          </Text> */}
           <Text style={styles.benefit}>
             Your phone becomes a source of peace.
+          </Text>
+          <Text style={styles.description}>
+            UNLOAD. IT. ALL.
           </Text>
         </View>
       </View>
