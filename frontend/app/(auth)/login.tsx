@@ -25,7 +25,7 @@ const COLORS = {
   error: "#E57373",
   shadow: "#B6E0E5",
 };
-const SERVER_URL="http://10.151.219.175:8000"
+const SERVER_URL=process.env.EXPO_PUBLIC_SERVER_URL!;
 
 
 
