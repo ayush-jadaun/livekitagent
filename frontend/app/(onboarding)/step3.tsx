@@ -1,3 +1,4 @@
+// app/(onboarding)/step3.tsx
 import React from "react";
 import {
   View,
@@ -6,26 +7,18 @@ import {
   StyleSheet,
   Dimensions,
 } from "react-native";
-import AsyncStorage from "@react-native-async-storage/async-storage";
 import LottieLoader from "../../components/LottieLoader";
 import { router } from "expo-router";
+import { useOnboarding } from "@/contexts/OnboardingContext";
 
 const { width } = Dimensions.get("window");
 
 export default function OnboardingStep3() {
-  // Mark onboarding as complete in AsyncStorage
-  const markOnboardingComplete = async () => {
-    try {
-      await AsyncStorage.setItem("onboarding_complete", "true");
-    } catch (e) {
-      // Optionally handle error
-      console.error("Failed to set onboarding complete flag:", e);
-    }
-  };
+  const { markOnboardingComplete } = useOnboarding();
 
   const handleGetStarted = async () => {
     await markOnboardingComplete();
-    router.replace("/login");
+    router.replace("/(auth)/login");
   };
 
   return (
@@ -44,15 +37,10 @@ export default function OnboardingStep3() {
         <Text style={styles.subtitle}>Transform stress into calm</Text>
 
         <View style={styles.textContainer}>
-          {/* <Text style={styles.description}>
-              
-          </Text> */}
           <Text style={styles.benefit}>
             Your phone becomes a source of peace.
           </Text>
-          <Text style={styles.description}>
-            UNLOAD. IT. ALL.
-          </Text>
+          <Text style={styles.description}>UNLOAD. IT. ALL.</Text>
         </View>
       </View>
 

@@ -1,3 +1,4 @@
+// app/(onboarding)/step1.tsx
 import React from "react";
 import {
   View,
@@ -29,11 +30,12 @@ export default function OnboardingStep1() {
 
         <View style={styles.textContainer}>
           <Text style={styles.description}>
-            We're glad you're here. Rasmlai is your safe space for self-care
-            and growth.
+            We're glad you're here. Rasmlai is your safe space for self-care and
+            growth.
           </Text>
           <Text style={styles.mission}>
-            Our mission: You don’t have to bear it alone.       Shout, Whisper or just Talk.
+            Our mission: You don't have to bear it alone. Shout, Whisper or just
+            Talk.
           </Text>
         </View>
       </View>
@@ -41,7 +43,7 @@ export default function OnboardingStep1() {
       <View style={styles.buttonContainer}>
         <TouchableOpacity
           style={styles.nextButton}
-          onPress={() => router.push("/step2")}
+          onPress={() => router.push("/(onboarding)/step2")} // Updated navigation
           activeOpacity={0.8}
         >
           <Text style={styles.nextButtonText}>Continue</Text>

@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { useRouter, useSegments } from "expo-router";
 import { supabase } from "../lib/supabase";
 import { Session } from "@supabase/supabase-js";
+import { useOnboarding } from "@/contexts/OnboardingContext";
 
 export default function AuthWrapper({
   children,
@@ -12,6 +13,7 @@ export default function AuthWrapper({
   const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(true);
   const [isNavigationReady, setIsNavigationReady] = useState(false);
+  const { onboardingComplete } = useOnboarding();
   const router = useRouter();
   const segments = useSegments();
 
@@ -41,18 +43,31 @@ export default function AuthWrapper({
   }, []);
 
   useEffect(() => {
-    if (loading || !isNavigationReady) return;
+    if (loading || !isNavigationReady || onboardingComplete === null) return;
 
     const inAuthGroup = segments[0] === "(auth)";
+    const inOnboardingGroup = segments[0] === "(onboarding)";
 
-    if (!session && !inAuthGroup) {
-      // User is not authenticated and not in auth group
-      router.replace("/(auth)/login");
-    } else if (session && inAuthGroup) {
-      // User is authenticated but in auth group
-      router.replace("/(tabs)");
+    // If onboarding is not complete
+    if (!onboardingComplete) {
+      // Only redirect to onboarding if user is not already in onboarding group
+      if (!inOnboardingGroup) {
+        router.replace("/(onboarding)/step1");
+      }
+      return;
     }
-  }, [session, segments, loading, isNavigationReady]);
+
+    // If onboarding is complete, handle authentication
+    if (onboardingComplete) {
+      if (!session && !inAuthGroup) {
+        // User is not authenticated and not in auth group
+        router.replace("/(auth)/login");
+      } else if (session && inAuthGroup) {
+        // User is authenticated but in auth group
+        router.replace("/(tabs)");
+      }
+    }
+  }, [session, segments, loading, isNavigationReady, onboardingComplete]);
 
   return <>{children}</>;
 }

@@ -1,27 +1,19 @@
-import React, { useEffect } from "react";
-import { Stack, router, usePathname } from "expo-router";
-import AsyncStorage from "@react-native-async-storage/async-storage";
+// app/_layout.tsx
+import React from "react";
+import { Stack } from "expo-router";
+import { OnboardingProvider } from "@/contexts/OnboardingContext";
 import AuthWrapper from "@/components/AuthWrapper";
+
 export default function RootLayout() {
-  const pathname = usePathname();
-
-  useEffect(() => {
-    const checkOnboarding = async () => {
-      const onboardingComplete = await AsyncStorage.getItem(
-        "onboarding_complete"
-      );
-      if (onboardingComplete !== "true" && !pathname.startsWith("/step")) {
-        router.replace("/step1");
-      }
-    };
-    checkOnboarding();
-  }, [pathname]);
-
   return (
-    <AuthWrapper>
-      <Stack screenOptions={{ headerShown: false }}>
-        <Stack.Screen name="(tabs)" />
-      </Stack>
-    </AuthWrapper>
+    <OnboardingProvider>
+      <AuthWrapper>
+        <Stack screenOptions={{ headerShown: false }}>
+          <Stack.Screen name="(tabs)" />
+          <Stack.Screen name="(auth)" />
+          <Stack.Screen name="(onboarding)" />
+        </Stack>
+      </AuthWrapper>
+    </OnboardingProvider>
   );
 }
