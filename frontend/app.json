@@ -5,7 +5,7 @@
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/rsml.png",
-    "scheme": "Rasmlai",
+    "scheme": ["rasmlai", "exp+rasmlai", "frontend"],
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "ios": {
