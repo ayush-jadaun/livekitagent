@@ -11,6 +11,7 @@ import {
   SafeAreaView,
   StatusBar,
   Dimensions,
+  BackHandler,
 } from "react-native";
 import { useState, useEffect } from "react";
 import {
@@ -26,11 +27,16 @@ import { Track } from "livekit-client";
 import { supabase } from "../../lib/supabase";
 import { User } from "@supabase/supabase-js";
 import { useRouter } from "expo-router";
+import { useFocusEffect } from "@react-navigation/native";
+import { Image } from "react-native";
 
 registerGlobals();
 
 const { width, height } = Dimensions.get("window");
-const SERVER_URL = "http://10.167.29.175:8000";
+const SERVER_URL = process.env.EXPO_PUBLIC_SERVER_URL;
+
+
+console.log(SERVER_URL)
 
 interface RoomInfo {
   room_id: string;
@@ -61,11 +67,48 @@ export default function App() {
   );
   const [roomInfo, setRoomInfo] = useState<RoomInfo | null>(null);
   const [user, setUser] = useState<User | null>(null);
-  // REMOVE this state
-  // const [autoStartAttempted, setAutoStartAttempted] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
+  const [shouldAutoStart, setShouldAutoStart] = useState<boolean>(true);
 
   const router = useRouter();
+
+  // Handle back button press when in call
+  useFocusEffect(
+    React.useCallback(() => {
+      const onBackPress = () => {
+        if (isConnected) {
+          Alert.alert(
+            "End Call",
+            "Are you sure you want to end the call and go back?",
+            [
+              {
+                text: "Cancel",
+                onPress: () => null,
+                style: "cancel",
+              },
+              {
+                text: "End Call",
+                onPress: async () => {
+                  await endSession();
+                  router.back();
+                },
+                style: "destructive",
+              },
+            ]
+          );
+          return true; // Prevent default back action
+        }
+        return false; // Allow default back action
+      };
+
+      const subscription = BackHandler.addEventListener(
+        "hardwareBackPress",
+        onBackPress
+      );
+
+      return () => subscription.remove();
+    }, [isConnected])
+  );
 
   // Check if the server is online (simple /ping endpoint or fallback to base url)
   const checkServerOnline = async (): Promise<boolean> => {
@@ -95,13 +138,12 @@ export default function App() {
     };
   }, []);
 
-  // REMOVE THIS AUTO-CALL LOGIC!
-  // useEffect(() => {
-  //   if (user && !isConnected && !autoStartAttempted && !loading && !error) {
-  //     setAutoStartAttempted(true);
-  //     initializeAndStartCall();
-  //   }
-  // }, [user, isConnected, autoStartAttempted, loading, error]);
+  // Auto-start call when user is authenticated
+  useEffect(() => {
+    if (user && !isConnected && !loading && !error && shouldAutoStart) {
+      initializeAndStartCall();
+    }
+  }, [user, isConnected, loading, error, shouldAutoStart]);
 
   // After showing error, push user to homepage after 2-3 seconds
   useEffect(() => {
@@ -262,6 +304,7 @@ export default function App() {
 
   const endSession = async (): Promise<void> => {
     if (!currentSession || !user) return;
+    setShouldAutoStart(false);
 
     try {
       const {
@@ -283,6 +326,7 @@ export default function App() {
       if (response.ok) {
         console.log("Session ended successfully");
       }
+      router.replace("/");
     } catch (error) {
       // Don't show error if server is offline on endSession
       console.error("Error ending session:", error);
@@ -292,28 +336,24 @@ export default function App() {
     setCurrentSession(null);
     setToken("");
     setWsURL("");
-    // setAutoStartAttempted(false); // REMOVE this line
-
-    // Do not auto-replace to "/" after end. Let user choose to reconnect or leave.
-    // router.replace("/");
   };
 
   const handleCancel = async (): Promise<void> => {
+    setShouldAutoStart(false); // Prevent auto-restart
     await endSession();
-    router.replace("/"); // If you want to send user to home on cancel
   };
 
   const retryConnection = async (): Promise<void> => {
     setError(null);
-    // setAutoStartAttempted(false); // REMOVE this line
     setLoading(false);
+    setShouldAutoStart(true); // Allow auto-start for retry
     await initializeAndStartCall();
   };
 
   if (!user) {
     return (
       <View style={styles.setupContainer}>
-        <Text style={styles.title}>LiveKit Call</Text>
+        <Text style={styles.title}>Rasmlai</Text>
         <Text style={styles.subtitle}>Please log in to continue</Text>
         <Text style={styles.note}>Redirecting to login...</Text>
       </View>
@@ -366,46 +406,19 @@ export default function App() {
     );
   }
 
-  // Show a "Start Call" button if not connected and not loading
-  if (!isConnected && !loading) {
-    return (
-      <View style={styles.setupContainer}>
-        <Text style={styles.title}>Ready to join?</Text>
-        {roomInfo && (
-          <View style={styles.roomInfo}>
-            <Text style={styles.roomText}>Your Room: {roomInfo.room_name}</Text>
-            <Text style={styles.statusText}>
-              Status: {roomInfo.room_condition === "on" ? "Active" : "Ready"}
-            </Text>
-          </View>
-        )}
-        <TouchableOpacity
-          style={[styles.button, styles.callButton]}
-          onPress={initializeAndStartCall}
-          disabled={loading}
-        >
-          <Text style={styles.buttonText}>Start Call</Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={[styles.button, styles.logoutButton]}
-          onPress={handleCancel}
-        >
-          <Text style={styles.buttonText}>Cancel</Text>
-        </TouchableOpacity>
-      </View>
-    );
-  }
-
+  // Loading state - show while connecting
   if (loading) {
     return (
       <View style={styles.setupContainer}>
-        <Text style={styles.title}>Connecting...</Text>
+        <Text style={styles.title}>🔥 Connecting...</Text>
         <Text style={styles.subtitle}>
-          {roomInfo ? "Starting your call" : "Setting up your room"}
+          {roomInfo
+            ? "Starting your vent session"
+            : "Setting up your safe space"}
         </Text>
         <ActivityIndicator
           size="large"
-          color="#007AFF"
+          color="#E53E3E"
           style={{ marginTop: 20 }}
         />
 
@@ -439,61 +452,53 @@ const RoomView: React.FC<RoomViewProps> = ({
   roomName,
   sessionId,
 }) => {
+  const [isCallActive, setIsCallActive] = useState(true);
   const tracks = useTracks([Track.Source.Camera]);
 
-  const renderTrack: ListRenderItem<TrackReferenceOrPlaceholder> = ({
-    item,
-  }) => {
-    if (isTrackReference(item)) {
-      return <VideoTrack trackRef={item} style={styles.participantView} />;
-    } else {
-      return (
-        <View style={styles.participantView}>
-          <Text style={styles.placeholderText}>No Video</Text>
-        </View>
-      );
-    }
+  const handleEndCall = () => {
+    setIsCallActive(false);
+    onDisconnect();
   };
 
+
   return (
-    <SafeAreaView style={styles.callContainer}>
-      <StatusBar barStyle="light-content" backgroundColor="#1a1a1a" />
+    <SafeAreaView style={styles.metalCallContainer}>
+      <StatusBar barStyle="light-content" backgroundColor="#0a0a0a" />
 
-      {/* Header */}
-      <View style={styles.callHeader}>
-        <View style={styles.callHeaderContent}>
-          <Text style={styles.callRoomTitle}>{roomName}</Text>
-          {sessionId && (
-            <Text style={styles.callSessionText}>
-              ID: {sessionId.substring(0, 8)}...
-            </Text>
-          )}
+      {/* Main Content */}
+      <View style={styles.metalCallContent}>
+        {/* Logo Space */}
+        <View style={styles.logoContainer}>
+          <Image
+            source={require("../../assets/images/rsml.png")}
+            style={styles.logoPlaceholder}
+          />
+  
         </View>
-      </View>
 
-      {/* Main content area */}
-      <View style={styles.callContent}>
-        <FlatList
-          data={tracks}
-          renderItem={renderTrack}
-          keyExtractor={(item, index) => index.toString()}
-          style={styles.tracksList}
-          contentContainerStyle={styles.tracksContainer}
-          showsVerticalScrollIndicator={false}
-        />
-      </View>
+        {/* R_AI Text */}
+        <View style={styles.brandContainer}>
+          <Text style={styles.brandText}>Rasmlai</Text>
+        </View>
 
-      {/* Footer with controls */}
-      <View style={styles.callFooter}>
-        <View style={styles.callControls}>
+        {/* Spacer */}
+        <View style={styles.spacer} />
+
+        {/* Control Button */}
+        <View style={styles.controlContainer}>
           <TouchableOpacity
-            style={styles.endCallButton}
-            onPress={onDisconnect}
+            style={[styles.controlButton, styles.endCallButton]}
+            onPress={handleEndCall}
             activeOpacity={0.8}
           >
-            <Text style={styles.endCallText}>End Call</Text>
+            <View style={styles.controlButtonInner}>
+              <Text style={styles.controlButtonText}>{"END"}</Text>
+            </View>
           </TouchableOpacity>
         </View>
+
+        {/* Bottom Spacer */}
+        <View style={styles.bottomSpacer} />
       </View>
     </SafeAreaView>
   );
@@ -505,7 +510,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     alignItems: "center",
     padding: 20,
-    backgroundColor: "#f5f5f5",
+    backgroundColor: "#FFE6E6",
   },
   container: {
     flex: 1,
@@ -515,7 +520,7 @@ const styles = StyleSheet.create({
     fontSize: 24,
     fontWeight: "bold",
     marginBottom: 10,
-    color: "#333",
+    color: "#E53E3E",
     textAlign: "center",
   },
   subtitle: {
@@ -534,7 +539,7 @@ const styles = StyleSheet.create({
     marginBottom: 10,
   },
   callButton: {
-    backgroundColor: "#34C759",
+    backgroundColor: "#E53E3E",
     paddingHorizontal: 40,
     paddingVertical: 20,
   },
@@ -574,7 +579,110 @@ const styles = StyleSheet.create({
     marginBottom: 10,
     fontStyle: "italic",
   },
-  // Call screen styles
+
+  // New Metal Call Screen Styles
+  metalCallContainer: {
+    flex: 1,
+    backgroundColor: "#0a0a0a", // Deep black metal background
+  },
+  metalCallContent: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "flex-start",
+    paddingTop: 60,
+  },
+  logoContainer: {
+    marginTop: 40,
+    marginBottom: 30,
+    alignItems: "center",
+  },
+  logoPlaceholder: {
+    width: 120,
+    height: 120,
+    backgroundColor: "transparent",
+    borderRadius: 60,
+    justifyContent: "center",
+    alignItems: "center",
+    // borderWidth: 2,
+    // borderColor: "#333",
+    // shadowColor: "#000",
+    // shadowOffset: {
+    //   width: 0,
+    //   height: 4,
+    // },
+    // shadowOpacity: 0.3,
+    // shadowRadius: 5,
+    elevation: 8,
+  },
+  logoText: {
+    color: "#666",
+    fontSize: 16,
+    fontWeight: "bold",
+    letterSpacing: 2,
+  },
+  brandContainer: {
+    marginBottom: 40,
+  },
+  brandText: {
+    fontSize:30,
+    fontWeight: "300",
+    color: "#ffffff",
+    letterSpacing: 8,
+    textAlign: "center",
+    fontFamily: "monospace",
+    textShadowColor: "#000",
+    textShadowOffset: { width: 2, height: 2 },
+    textShadowRadius: 4,
+  },
+  spacer: {
+    flex: 1,
+  },
+  controlContainer: {
+    alignItems: "center",
+    marginBottom: 80,
+  },
+  controlButton: {
+    width: 140,
+    height: 140,
+    borderRadius: 70,
+    justifyContent: "center",
+    alignItems: "center",
+    shadowColor: "#000",
+    shadowOffset: {
+      width: 0,
+      height: 8,
+    },
+    shadowOpacity: 0.4,
+    shadowRadius: 12,
+    elevation: 15,
+  },
+  startCallButton: {
+    backgroundColor: "#1a1a1a",
+    borderWidth: 3,
+    borderColor: "#00ff00",
+  },
+  controlButtonInner: {
+    width: 110,
+    height: 110,
+    borderRadius: 55,
+    backgroundColor: "#0a0a0a",
+    justifyContent: "center",
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: "#333",
+  },
+  controlButtonText: {
+    color: "#ffffff",
+    fontSize: 16,
+    fontWeight: "bold",
+    letterSpacing: 2,
+    textAlign: "center",
+  },
+  bottomSpacer: {
+    height: 60,
+  },
+
+  // Legacy styles (keeping for other screens)
   callContainer: {
     flex: 1,
     backgroundColor: "#1a1a1a",
@@ -595,9 +703,16 @@ const styles = StyleSheet.create({
     fontWeight: "bold",
     textAlign: "center",
   },
+  callSubtitle: {
+    color: "#FF6B6B",
+    fontSize: 14,
+    marginTop: 4,
+    textAlign: "center",
+    fontStyle: "italic",
+  },
   callSessionText: {
     color: "#ccc",
-    fontSize: 14,
+    fontSize: 12,
     marginTop: 4,
     textAlign: "center",
   },
@@ -617,10 +732,10 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   endCallButton: {
-    backgroundColor: "#FF3B30",
+    backgroundColor: "#E53E3E",
     paddingHorizontal: 40,
     paddingVertical: 15,
-    borderRadius: 25,
+    borderRadius: 1200,
     minWidth: 140,
     alignItems: "center",
     shadowColor: "#000",
@@ -655,7 +770,7 @@ const styles = StyleSheet.create({
     borderColor: "#555",
   },
   placeholderText: {
-    color: "#ccc",
+    color: "#FF6B6B",
     fontSize: 16,
     fontWeight: "500",
   },

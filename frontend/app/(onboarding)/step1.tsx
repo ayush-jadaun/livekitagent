@@ -22,19 +22,18 @@ export default function OnboardingStep1() {
       </View>
 
       <View style={styles.contentContainer}>
-        <Text style={styles.title}>Welcome to Mindful</Text>
+        <Text style={styles.title}>Welcome to Rasmlai</Text>
         <Text style={styles.subtitle}>
           Your journey to well-being starts here
         </Text>
 
         <View style={styles.textContainer}>
           <Text style={styles.description}>
-            We're glad you're here. Mindful is your safe space for self-care and
-            growth.
+            We're glad you're here. Rasmlai is your safe space for self-care
+            and growth.
           </Text>
           <Text style={styles.mission}>
-            Our mission: Help you nurture your mental well-being, one mindful
-            moment at a time.
+            Our mission: You don’t have to bear it alone.       Shout, Whisper or just Talk.
           </Text>
         </View>
       </View>

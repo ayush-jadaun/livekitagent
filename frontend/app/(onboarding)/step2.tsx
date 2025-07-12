@@ -27,7 +27,7 @@ export default function OnboardingStep2() {
 
         <View style={styles.textContainer}>
           <Text style={styles.description}>
-            Build self-awareness with quick daily mood tracking.
+            Self-awareness starts with Self-reflection
           </Text>
           <Text style={styles.benefit}>
             Watch your progress unfold over time.

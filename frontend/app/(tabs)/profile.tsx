@@ -11,6 +11,7 @@ import {
   ActivityIndicator,
   RefreshControl,
   Platform,
+  Linking
 } from "react-native";
 import { router } from "expo-router";
 import { supabase } from "../../lib/supabase";
@@ -55,7 +56,7 @@ export default function ProfileScreen() {
     totalSessions: 0,
     currentStreak: 0,
     totalMinutes: 0,
-    favoriteActivity: "Meditation",
+    favoriteActivity: "Meditation (Coming soon)",
   });
   const [isLoading, setIsLoading] = useState(true);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
@@ -144,7 +145,7 @@ export default function ProfileScreen() {
           totalSessions,
           currentStreak,
           totalMinutes,
-          favoriteActivity: "Meditation",
+          favoriteActivity: "Meditation (Coming soon )",
         });
       }
     } catch (error) {
@@ -200,7 +201,7 @@ export default function ProfileScreen() {
   };
 
   const handleLogout = async () => {
-    Alert.alert("Sign Out", "Are you sure you want to sign out?", [
+    Alert.alert("Logout", "Are you sure you want to logout?", [
       {
         text: "Cancel",
         style: "cancel",
@@ -214,7 +215,7 @@ export default function ProfileScreen() {
             const { error } = await supabase.auth.signOut();
 
             if (error) {
-              Alert.alert("Error", "Failed to sign out. Please try again.");
+              Alert.alert("Error", "Failed to logout. Please try again.");
               console.error("Logout error:", error);
             } else {
               // Successfully signed out
@@ -238,6 +239,11 @@ export default function ProfileScreen() {
       month: "long",
     });
   };
+
+  const handleForm= ()=>{
+    Linking.openURL("https://forms.gle/iT9s9ivSbDs6MDuX7");
+
+  }
 
   const getUserDisplayName = () => {
     if (userProfile?.name) {
@@ -327,14 +333,13 @@ export default function ProfileScreen() {
           </View>
           <View style={styles.statCard}>
             <Text style={styles.statNumber}>{userStats.currentStreak}</Text>
-            <Text style={styles.statLabel}>Day Streak</Text>
+            <Text style={styles.statLabel}>Day Streak(Coming soon)</Text>
           </View>
           <View style={styles.statCard}>
             <Text style={styles.statNumber}>{userStats.totalMinutes}</Text>
-            <Text style={styles.statLabel}>Minutes</Text>
+            <Text style={styles.statLabel}>Minutes     (Coming soon)</Text>
           </View>
         </View>
-
         {/* Favorite Activity */}
         <View style={styles.activitySection}>
           <Text style={styles.sectionTitle}>Favorite Activity</Text>
@@ -355,17 +360,17 @@ export default function ProfileScreen() {
         <View style={styles.menuSection}>
           <TouchableOpacity style={styles.menuItem} activeOpacity={0.7}>
             <Text style={styles.menuEmoji}>📊</Text>
-            <Text style={styles.menuText}>My Progress</Text>
+            <Text style={styles.menuText}>My Progress (Coming soon)</Text>
             <Text style={styles.menuArrow}>→</Text>
           </TouchableOpacity>
 
           <TouchableOpacity style={styles.menuItem} activeOpacity={0.7}>
             <Text style={styles.menuEmoji}>💭</Text>
-            <Text style={styles.menuText}>Journal Entries</Text>
+            <Text style={styles.menuText}>Journal Entries(Coming soon)</Text>
             <Text style={styles.menuArrow}>→</Text>
           </TouchableOpacity>
 
-          <TouchableOpacity
+          {/* <TouchableOpacity
             style={styles.menuItem}
             activeOpacity={0.7}
             onPress={() => router.push("/step1")}
@@ -373,14 +378,9 @@ export default function ProfileScreen() {
             <Text style={styles.menuEmoji}>🎯</Text>
             <Text style={styles.menuText}>Onboarding</Text>
             <Text style={styles.menuArrow}>→</Text>
-          </TouchableOpacity>
+          </TouchableOpacity> */}
 
-          <TouchableOpacity style={styles.menuItem} activeOpacity={0.7}>
-            <Text style={styles.menuEmoji}>🎯</Text>
-            <Text style={styles.menuText}>Goals & Reminders</Text>
-            <Text style={styles.menuArrow}>→</Text>
-          </TouchableOpacity>
-
+{/* 
           <TouchableOpacity
             style={styles.menuItem}
             activeOpacity={0.7}
@@ -389,21 +389,21 @@ export default function ProfileScreen() {
             <Text style={styles.menuEmoji}>⚙️</Text>
             <Text style={styles.menuText}>Settings</Text>
             <Text style={styles.menuArrow}>→</Text>
-          </TouchableOpacity>
+          </TouchableOpacity> */}
 
-          <TouchableOpacity style={styles.menuItem} activeOpacity={0.7}>
+          <TouchableOpacity style={styles.menuItem} activeOpacity={0.7} onPress={handleForm}>
             <Text style={styles.menuEmoji}>💬</Text>
-            <Text style={styles.menuText}>Help & Support</Text>
+            <Text style={styles.menuText}>Feedback form!</Text>
             <Text style={styles.menuArrow}>→</Text>
           </TouchableOpacity>
         </View>
 
         {/* User ID for debugging (remove in production) */}
-        {__DEV__ && (
+        {/* {__DEV__ && (
           <View style={styles.debugSection}>
             <Text style={styles.debugText}>User ID: {user.id}</Text>
           </View>
-        )}
+        )} */}
 
         {/* Logout Button */}
         <TouchableOpacity
@@ -416,7 +416,7 @@ export default function ProfileScreen() {
           disabled={isLoggingOut}
         >
           <Text style={styles.logoutText}>
-            {isLoggingOut ? "Signing Out..." : "Sign Out"}
+            {isLoggingOut ? "Loging Out..." : "Log Out"}
           </Text>
         </TouchableOpacity>
 
