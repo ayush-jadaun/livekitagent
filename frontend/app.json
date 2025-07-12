@@ -1,11 +1,11 @@
 {
   "expo": {
     "name": "Rasmlai",
-    "slug": "frontend",
+    "slug": "Rasmlai",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/rsml.png",
-    "scheme": "frontend",
+    "scheme": "Rasmlai",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "ios": {
