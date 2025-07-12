@@ -90,6 +90,18 @@ class UserCreate(BaseModel):
     name: str
     age: Optional[int] = None
 
+class UserProfileUpdate(BaseModel):
+    name: Optional[str] = None
+    age: Optional[int] = None
+
+class UserProfileResponse(BaseModel):
+    user_id: str
+    name: str
+    age: Optional[int] = None
+    onboarding: str
+    created_at: str
+    updated_at: str
+
 class SessionResponse(BaseModel):
     session_id: str
     room_name: str
@@ -114,8 +126,7 @@ async def get_db():
     async with pool.acquire() as conn:
         yield conn
 
-# Authentication helper
-async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
+async def get_current_user_with_metadata(credentials: HTTPAuthorizationCredentials = Depends(security)):
     try:
         token = credentials.credentials
         logger.info(f"Attempting to decode token: {token[:20]}...")
@@ -131,7 +142,7 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
             logger.error("No 'sub' claim found in token")
             raise HTTPException(status_code=401, detail="Invalid token: no user ID")
         logger.info(f"Successfully authenticated user: {user_id}")
-        return user_id
+        return user_id, payload
     except jwt.ExpiredSignatureError:
         logger.error("Token expired")
         raise HTTPException(status_code=401, detail="Token expired")
@@ -142,33 +153,62 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
         logger.error(f"Unexpected error in authentication: {str(e)}")
         raise HTTPException(status_code=401, detail="Authentication failed")
 
-# --- Database functions (unchanged) ---
-async def ensure_user_exists(conn, user_id: str, user_data: Optional[Dict] = None):
+
+async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    user_id, _ = await get_current_user_with_metadata(credentials)
+    return user_id
+
+# --- Database functions ---
+async def ensure_user_exists(conn, user_id: str, supabase_user: Optional[Dict] = None):
+    """Ensure user exists in database and has a room assigned"""
     try:
         existing_user = await conn.fetchrow(
             "SELECT id FROM users WHERE id = $1", user_id
         )
         if not existing_user:
-            name = user_data.get('name', 'Anonymous') if user_data else 'Anonymous'
-            age = user_data.get('age') if user_data else None
+            # Extract user data from Supabase user metadata
+            name = 'Anonymous'
+            age = None
+            
+            if supabase_user:
+                # Get data from user_metadata (set during signup)
+                user_metadata = supabase_user.get('user_metadata', {})
+                name = user_metadata.get('name', 'Anonymous')
+                age = user_metadata.get('age')
+                
+                # Fallback to raw_user_meta_data if user_metadata is empty
+                if not user_metadata:
+                    raw_metadata = supabase_user.get('raw_user_meta_data', {})
+                    name = raw_metadata.get('name', 'Anonymous')
+                    age = raw_metadata.get('age')
+            
+            # Create user if doesn't exist
             await conn.execute("""
                 INSERT INTO users (id, name, age, onboarding, created_at, updated_at)
                 VALUES ($1, $2, $3, 'Pending', NOW(), NOW())
             """, user_id, name, age)
-            logger.info(f"Created new user: {user_id}")
+            
+            logger.info(f"Created new user: {user_id} with name: {name}, age: {age}")
+        
+        # Check if user has a room (should be auto-created by trigger)
         room = await conn.fetchrow(
             "SELECT id, room_name FROM room WHERE user_id = $1", user_id
         )
+        
         if not room:
+            # Fallback: create room manually if trigger didn't work
             room_name = f"room_{user_id}"
             room_id = await conn.fetchval("""
                 INSERT INTO room (user_id, room_name, room_condition, created_at, updated_at)
                 VALUES ($1, $2, 'off', NOW(), NOW())
                 RETURNING id
             """, user_id, room_name)
+            
             logger.info(f"Created room for user {user_id}: {room_name}")
             return str(room_id), room_name
+        
         return str(room['id']), room['room_name']
+        
     except Exception as e:
         logger.error(f"Error ensuring user exists: {str(e)}")
         raise HTTPException(status_code=500, detail="Database error")
@@ -210,7 +250,64 @@ async def end_session(conn, session_id: str, user_id: str):
         logger.error(f"Error ending session: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to end session")
 
-# --- API Endpoints ---
+@app.post("/api/users/profile/sync")
+async def sync_user_profile_from_token(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+    conn = Depends(get_db)
+):
+    """
+    Sync user profile from JWT token metadata to database
+    This extracts name and age from the token and stores it in the database
+    """
+    try:
+        # Get user ID and full token payload
+        user_id, token_payload = await get_current_user_with_metadata(credentials)
+        
+        # Extract user metadata from token
+        user_metadata = token_payload.get('user_metadata', {})
+        if not user_metadata:
+            # Fallback to raw_user_meta_data
+            user_metadata = token_payload.get('raw_user_meta_data', {})
+        
+        name = user_metadata.get('name', 'Anonymous')
+        age = user_metadata.get('age')
+        
+        logger.info(f"Syncing profile for user {user_id}: name={name}, age={age}")
+        
+        # Ensure user exists and update profile
+        await ensure_user_exists(conn, user_id, token_payload)
+        
+        # Update user profile with metadata from token
+        await conn.execute("""
+            UPDATE users 
+            SET name = $1, age = $2, onboarding = 'Done', updated_at = NOW()
+            WHERE id = $3
+        """, name, age, user_id)
+        
+        # Get updated user data
+        user_data = await conn.fetchrow("""
+            SELECT id, name, age, onboarding, created_at, updated_at 
+            FROM users 
+            WHERE id = $1
+        """, user_id)
+        
+        if not user_data:
+            raise HTTPException(status_code=404, detail="User not found after sync")
+        
+        return UserProfileResponse(
+            user_id=str(user_data['id']), 
+            name=user_data['name'],
+            age=user_data['age'],
+            onboarding=user_data['onboarding'],
+            created_at=user_data['created_at'].isoformat(),
+            updated_at=user_data['updated_at'].isoformat()
+        )
+        
+    except HTTPException:
+        raise  # Re-raise HTTP exceptions as-is
+    except Exception as e:
+        logger.error(f"Error syncing user profile: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to sync user profile")
 @app.post("/api/users/setup")
 async def setup_user(
     user_data: UserCreate,

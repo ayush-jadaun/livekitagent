@@ -57,64 +57,33 @@ export default function SignupScreen() {
     }
 
     setLoading(true);
-    const { error: signUpError } = await supabase.auth.signUp({
-      email,
-      password,
-    });
-
-    if (signUpError) {
-      setLoading(false);
-      Alert.alert("Signup failed", signUpError.message);
-      return;
-    }
-
-    // After signup, get the session and call user setup
-    const {
-      data: { session },
-      error: sessionError,
-    } = await supabase.auth.getSession();
-
-    if (sessionError || !session) {
-      setLoading(false);
-      Alert.alert(
-        "Error",
-        "Signup successful, Please check your email for verification."
-      );
-      router.push("/login");
-      return;
-    }
 
     try {
-      // Call your user setup endpoint
-      const response = await fetch(`${SERVER_URL}/api/users/setup`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${session.access_token}`,
-          "Content-Type": "application/json",
+      const { error: signUpError } = await supabase.auth.signUp({
+        email,
+        password,
+        options: {
+          data: {
+            name: name.trim(),
+            age: parseInt(age),
+          },
         },
-        body: JSON.stringify({
-          name: name.trim(),
-          age: parseInt(age),
-        }),
       });
 
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`Server error: ${response.status} - ${errorText}`);
+      if (signUpError) {
+        Alert.alert("Signup failed", signUpError.message);
+        return;
       }
 
       Alert.alert(
         "Signup successful!",
-        "Check your email to confirm your account. Profile setup complete!"
+        "Please check your email and click the verification link to complete your account setup."
       );
+
       router.push("/login");
     } catch (error) {
-      let message = "Signup succeeded, but profile setup failed";
-      if (error instanceof Error) {
-        message += `: ${error.message}`;
-      }
-      Alert.alert("Error", message);
-      router.push("/login");
+      console.error("Signup error:", error);
+      Alert.alert("Error", "An unexpected error occurred during signup");
     } finally {
       setLoading(false);
     }

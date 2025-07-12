@@ -25,6 +25,9 @@ const COLORS = {
   error: "#E57373",
   shadow: "#B6E0E5",
 };
+const SERVER_URL="http://10.151.219.175:8000"
+
+
 
 export default function LoginScreen() {
   const [email, setEmail] = useState("");
@@ -41,17 +44,71 @@ export default function LoginScreen() {
     checkSession();
   }, []);
 
+
+  const syncUserProfile = async () => {
+    try {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+
+      if (session?.access_token) {
+        const response = await fetch(`${SERVER_URL}/api/users/profile/sync`, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${session.access_token}`,
+            "Content-Type": "application/json",
+          },
+        });
+
+        if (response.ok) {
+          const userProfile = await response.json();
+          console.log("User profile synced:", userProfile);
+          return userProfile;
+        } else {
+          const errorData = await response.json();
+          console.error("Profile sync failed:", errorData);
+          throw new Error(errorData.detail || "Profile sync failed");
+        }
+      } else {
+        throw new Error("No valid session found");
+      }
+    } catch (error) {
+      console.error("Error syncing profile:", error);
+      throw error; 
+    }
+  };
+
   async function handleLogin() {
     setLoading(true);
-    const { error } = await supabase.auth.signInWithPassword({
-      email,
-      password,
-    });
-    setLoading(false);
-    if (error) {
-      Alert.alert("Login failed", error.message);
-    } else {
+    try {
+      const { error } = await supabase.auth.signInWithPassword({
+        email,
+        password,
+      });
+
+      if (error) {
+        Alert.alert("Login failed", error.message);
+        return;
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+
+      try {
+        await syncUserProfile();
+        console.log("Profile synced successfully");
+      } catch (syncError) {
+        console.warn("Profile sync failed, but login succeeded:", syncError);
+
+      }
+
       router.replace("/");
+    } catch (error) {
+   const errorMessage =
+     error instanceof Error ? error.message : "An unexpected error occurred";
+    Alert.alert("Login failed", errorMessage);
+    } finally {
+      setLoading(false);
     }
   }
 
@@ -73,7 +130,7 @@ export default function LoginScreen() {
           />
           <Text style={styles.title}>Welcome Back</Text>
           <Text style={styles.subtitle}>
-           Your journey awaits, login to continue.
+            Your journey awaits, login to continue.
           </Text>
         </View>
         <View style={styles.inputContainer}>
