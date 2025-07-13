@@ -31,7 +31,7 @@
         "android.permission.WAKE_LOCK",
         "android.permission.BLUETOOTH"
       ],
-      "package": "com.anonymous.frontend"
+      "package": "com.anonymous.rasmlai"
     },
     "web": {
       "bundler": "metro",
