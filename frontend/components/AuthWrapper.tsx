@@ -1,6 +1,7 @@
 // components/AuthWrapper.tsx
 import { useEffect, useState } from "react";
 import { useRouter, useSegments } from "expo-router";
+import { AppState } from "react-native";
 import { supabase } from "../lib/supabase";
 import { Session } from "@supabase/supabase-js";
 import { useOnboarding } from "@/contexts/OnboardingContext";
@@ -18,26 +19,74 @@ export default function AuthWrapper({
   const segments = useSegments();
 
   useEffect(() => {
-    // Get initial session
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setSession(session);
-      setLoading(false);
-    });
+    let mounted = true;
+
+    const initializeAuth = async () => {
+      try {
+        const {
+          data: { session },
+          error,
+        } = await supabase.auth.getSession();
+
+        if (error) {
+          console.error("Error getting session:", error);
+        }
+
+        if (mounted) {
+          setSession(session);
+          setLoading(false);
+        }
+      } catch (error) {
+        console.error("Failed to initialize auth:", error);
+        if (mounted) {
+          setLoading(false);
+        }
+      }
+    };
+
+    initializeAuth();
 
     // Listen for auth changes
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, session) => {
-      setSession(session);
+    } = supabase.auth.onAuthStateChange(async (event, session) => {
+      console.log("Auth state changed:", event, session?.user?.id);
+
+      if (mounted) {
+        setSession(session);
+      }
     });
 
-    // Small delay to ensure navigation is ready
+    // App state change handler
+    const handleAppStateChange = (nextAppState: string) => {
+      if (nextAppState === "active") {
+        console.log("App became active, refreshing session...");
+        // Refresh session when app becomes active
+        supabase.auth.getSession().then(({ data: { session } }) => {
+          console.log("Session check on app active:", !!session);
+          if (mounted) {
+            setSession(session);
+          }
+        });
+      }
+    };
+
+    const appStateSubscription = AppState.addEventListener(
+      "change",
+      handleAppStateChange
+    );
+
+    // Navigation ready timer
     const timer = setTimeout(() => {
-      setIsNavigationReady(true);
+      if (mounted) {
+        setIsNavigationReady(true);
+      }
     }, 100);
 
     return () => {
+      mounted = false;
       subscription.unsubscribe();
+      appStateSubscription?.remove();
       clearTimeout(timer);
     };
   }, []);
@@ -48,22 +97,25 @@ export default function AuthWrapper({
     const inAuthGroup = segments[0] === "(auth)";
     const inOnboardingGroup = segments[0] === "(onboarding)";
 
-    // If onboarding is not complete
+    console.log("Navigation logic:", {
+      onboardingComplete,
+      hasSession: !!session,
+      currentSegment: segments[0],
+      inAuthGroup,
+      inOnboardingGroup,
+    });
+
     if (!onboardingComplete) {
-      // Only redirect to onboarding if user is not already in onboarding group
       if (!inOnboardingGroup) {
         router.replace("/(onboarding)/step1");
       }
       return;
     }
 
-    // If onboarding is complete, handle authentication
     if (onboardingComplete) {
       if (!session && !inAuthGroup) {
-        // User is not authenticated and not in auth group
         router.replace("/(auth)/login");
       } else if (session && inAuthGroup) {
-        // User is authenticated but in auth group
         router.replace("/(tabs)");
       }
     }

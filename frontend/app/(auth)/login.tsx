@@ -44,7 +44,6 @@ export default function LoginScreen() {
     checkSession();
   }, []);
 
-
   const syncUserProfile = async () => {
     try {
       const {
@@ -74,14 +73,14 @@ export default function LoginScreen() {
       }
     } catch (error) {
       console.error("Error syncing profile:", error);
-      throw error; 
+      throw error;
     }
   };
 
   async function handleLogin() {
     setLoading(true);
     try {
-      const { error } = await supabase.auth.signInWithPassword({
+      const { data, error } = await supabase.auth.signInWithPassword({
         email,
         password,
       });
@@ -91,22 +90,38 @@ export default function LoginScreen() {
         return;
       }
 
-      await new Promise((resolve) => setTimeout(resolve, 100));
+      // Verify session was created
+      if (!data.session) {
+        Alert.alert("Login failed", "No session created");
+        return;
+      }
 
+      console.log("Login successful, session:", data.session.user.id);
+
+      // Small delay to ensure session is persisted
+      await new Promise((resolve) => setTimeout(resolve, 200));
+
+      // Verify session persistence
+      const {
+        data: { session: persistedSession },
+      } = await supabase.auth.getSession();
+      if (!persistedSession) {
+        console.warn("Session not persisted properly");
+      }
 
       try {
         await syncUserProfile();
         console.log("Profile synced successfully");
       } catch (syncError) {
         console.warn("Profile sync failed, but login succeeded:", syncError);
-
       }
 
+      // Navigate to home
       router.replace("/");
     } catch (error) {
-   const errorMessage =
-     error instanceof Error ? error.message : "An unexpected error occurred";
-    Alert.alert("Login failed", errorMessage);
+      const errorMessage =
+        error instanceof Error ? error.message : "An unexpected error occurred";
+      Alert.alert("Login failed", errorMessage);
     } finally {
       setLoading(false);
     }

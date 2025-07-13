@@ -19,7 +19,6 @@ import {
   LiveKitRoom,
   useTracks,
   TrackReferenceOrPlaceholder,
-  VideoTrack,
   isTrackReference,
   registerGlobals,
 } from "@livekit/react-native";
@@ -453,7 +452,7 @@ const RoomView: React.FC<RoomViewProps> = ({
   sessionId,
 }) => {
   const [isCallActive, setIsCallActive] = useState(true);
-  const tracks = useTracks([Track.Source.Camera]);
+  const tracks = useTracks([Track.Source.Microphone]);
 
   const handleEndCall = () => {
     setIsCallActive(false);

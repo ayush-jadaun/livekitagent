@@ -5,12 +5,11 @@
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/rsml.png",
-    "scheme": ["rasmlai", "exp+rasmlai", "frontend"],
+    "scheme": "rasmlai",
     "userInterfaceStyle": "automatic",
     "ios": {
       "supportsTablet": true,
       "infoPlist": {
-        "NSCameraUsageDescription": "This app uses the camera for video calls",
         "NSMicrophoneUsageDescription": "This app uses the microphone for audio calls"
       },
       "bitcode": false
@@ -22,14 +21,14 @@
       },
       "edgeToEdgeEnabled": true,
       "permissions": [
-        "android.permission.CAMERA",
         "android.permission.RECORD_AUDIO",
         "android.permission.ACCESS_NETWORK_STATE",
         "android.permission.INTERNET",
         "android.permission.MODIFY_AUDIO_SETTINGS",
         "android.permission.SYSTEM_ALERT_WINDOW",
         "android.permission.WAKE_LOCK",
-        "android.permission.BLUETOOTH"
+        "android.permission.BLUETOOTH",
+        "android.permission.CAMERA"
       ],
       "package": "com.anonymous.rasmlai"
     },
@@ -53,7 +52,8 @@
         "expo-build-properties",
         {
           "android": {
-            "newArchEnabled": false
+            "newArchEnabled": false,
+            "hermesEnabled": false
           },
           "ios": {
             "newArchEnabled": false
