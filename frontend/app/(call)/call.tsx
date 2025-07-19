@@ -2,8 +2,6 @@ import * as React from "react";
 import {
   StyleSheet,
   View,
-  FlatList,
-  ListRenderItem,
   Text,
   TouchableOpacity,
   Alert,
@@ -12,31 +10,30 @@ import {
   StatusBar,
   Dimensions,
   BackHandler,
+  Image,
+  Animated,
 } from "react-native";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import {
   AudioSession,
   LiveKitRoom,
-  useTracks,
-  TrackReferenceOrPlaceholder,
-  isTrackReference,
   registerGlobals,
+  useRoomContext, // Correct hook
+  useRemoteParticipants, // Correct hook
 } from "@livekit/react-native";
-import { Track } from "livekit-client";
-import { supabase } from "../../lib/supabase";
 import { User } from "@supabase/supabase-js";
 import { useRouter } from "expo-router";
 import { useFocusEffect } from "@react-navigation/native";
-import { Image } from "react-native";
+import { supabase } from "../../lib/supabase";
 
 registerGlobals();
 
 const { width, height } = Dimensions.get("window");
 const SERVER_URL = process.env.EXPO_PUBLIC_SERVER_URL;
 
+console.log("Server URL:", SERVER_URL);
 
-console.log(SERVER_URL)
-
+// ---- Interfaces ---- //
 interface RoomInfo {
   room_id: string;
   room_name: string;
@@ -56,11 +53,12 @@ interface CreateRoomResponse {
   room_name: string;
 }
 
+// ---- Main App Component ---- //
 export default function App() {
   const [wsURL, setWsURL] = useState<string>("");
   const [token, setToken] = useState<string>("");
   const [isConnected, setIsConnected] = useState<boolean>(false);
-  const [loading, setLoading] = useState<boolean>(false);
+  const [loading, setLoading] = useState<boolean>(true);
   const [currentSession, setCurrentSession] = useState<CurrentSession | null>(
     null
   );
@@ -71,7 +69,32 @@ export default function App() {
 
   const router = useRouter();
 
-  // Handle back button press when in call
+  const endSession = React.useCallback(async (): Promise<void> => {
+    if (!currentSession || !user) return;
+    setShouldAutoStart(false);
+    try {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+      if (!session) return;
+      await fetch(
+        `${SERVER_URL}/api/sessions/${currentSession.session_id}/end`,
+        {
+          method: "POST",
+          headers: { Authorization: `Bearer ${session.access_token}` },
+        }
+      );
+      console.log("Session ended successfully on the server.");
+    } catch (e) {
+      console.error("Error ending session:", e);
+    } finally {
+      setIsConnected(false);
+      setCurrentSession(null);
+      setToken("");
+      setWsURL("");
+    }
+  }, [currentSession, user]);
+
   useFocusEffect(
     React.useCallback(() => {
       const onBackPress = () => {
@@ -80,54 +103,31 @@ export default function App() {
             "End Call",
             "Are you sure you want to end the call and go back?",
             [
-              {
-                text: "Cancel",
-                onPress: () => null,
-                style: "cancel",
-              },
+              { text: "Cancel", style: "cancel" },
               {
                 text: "End Call",
                 onPress: async () => {
                   await endSession();
-                  router.back();
+                  if (router) router.back();
                 },
                 style: "destructive",
               },
             ]
           );
-          return true; // Prevent default back action
+          return true;
         }
-        return false; // Allow default back action
+        return false;
       };
-
       const subscription = BackHandler.addEventListener(
         "hardwareBackPress",
         onBackPress
       );
-
       return () => subscription.remove();
-    }, [isConnected])
+    }, [isConnected, endSession, router])
   );
 
-  // Check if the server is online (simple /ping endpoint or fallback to base url)
-  const checkServerOnline = async (): Promise<boolean> => {
-    try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 3000);
-      const res = await fetch(`${SERVER_URL}/ping`, {
-        method: "GET",
-        signal: controller.signal,
-      });
-      clearTimeout(timeoutId);
-      if (res.ok) return true;
-      return false;
-    } catch (e) {
-      return false;
-    }
-  };
-
   useEffect(() => {
-    let start = async () => {
+    const start = async () => {
       await AudioSession.startAudioSession();
       await checkAuth();
     };
@@ -137,22 +137,58 @@ export default function App() {
     };
   }, []);
 
-  // Auto-start call when user is authenticated
+  const initializeAndStartCall = React.useCallback(async (): Promise<void> => {
+    if (!user) {
+      setError("User not authenticated.");
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    try {
+      if (!(await checkServerOnline())) {
+        throw new Error("The server is offline. Please try again later.");
+      }
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+      if (!session) throw new Error("No active session found.");
+      let room = await checkExistingRoom(session.access_token);
+      if (!room) {
+        console.log("No existing room found, creating a new one...");
+        room = await createRoom(session.access_token);
+        if (!room) throw new Error("Failed to create a new room.");
+      }
+      setRoomInfo(room);
+      console.log("Room initialized:", room.room_name);
+      await startSession(session.access_token, room);
+    } catch (e: any) {
+      console.error("Initialize and start call error:", e);
+      setError(e.message || "An unexpected error occurred.");
+      setLoading(false);
+    }
+  }, [user]);
+
   useEffect(() => {
     if (user && !isConnected && !loading && !error && shouldAutoStart) {
       initializeAndStartCall();
     }
-  }, [user, isConnected, loading, error, shouldAutoStart]);
+  }, [
+    user,
+    isConnected,
+    loading,
+    error,
+    shouldAutoStart,
+    initializeAndStartCall,
+  ]);
 
-  // After showing error, push user to homepage after 2-3 seconds
   useEffect(() => {
     if (error) {
       const timeout = setTimeout(() => {
-        router.replace("/");
-      }, 2500);
+        if (router) router.replace("/");
+      }, 3000);
       return () => clearTimeout(timeout);
     }
-  }, [error]);
+  }, [error, router]);
 
   const checkAuth = async (): Promise<void> => {
     try {
@@ -162,199 +198,109 @@ export default function App() {
       if (session?.user) {
         setUser(session.user);
       } else {
-        router.navigate("/login");
-        console.log("User not authenticated");
+        if (router) router.replace("/login");
+        console.log("User not authenticated, redirecting.");
       }
-    } catch (error) {
-      console.error("Error checking auth:", error);
+    } catch (e) {
+      console.error("Error checking auth:", e);
+      setError("Could not verify your session.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const checkServerOnline = async (): Promise<boolean> => {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 3000);
+      const res = await fetch(`${SERVER_URL}/ping`, {
+        signal: controller.signal,
+      });
+      clearTimeout(timeoutId);
+      return res.ok;
+    } catch (e) {
+      return false;
     }
   };
 
   const checkExistingRoom = async (
     accessToken: string
   ): Promise<RoomInfo | null> => {
-    try {
-      const response = await fetch(`${SERVER_URL}/api/users/room`, {
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          "Content-Type": "application/json",
-        },
-      });
-
-      if (response.ok) {
-        const roomData: RoomInfo = await response.json();
-        return roomData;
-      }
-      return null;
-    } catch (error) {
-      // Server likely offline/network error
-      throw new Error("Server is offline. Please try again later.");
-    }
+    const response = await fetch(`${SERVER_URL}/api/users/room`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (response.ok) return response.json();
+    return null;
   };
 
   const createRoom = async (accessToken: string): Promise<RoomInfo | null> => {
-    try {
-      const response = await fetch(`${SERVER_URL}/api/rooms/create`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          "Content-Type": "application/json",
-        },
-      });
-
-      if (response.ok) {
-        const roomData: CreateRoomResponse = await response.json();
-        return {
-          room_id: roomData.room_id,
-          room_name: roomData.room_name,
-          room_condition: "off",
-        };
-      }
-      return null;
-    } catch (error) {
-      // Server likely offline/network error
-      throw new Error("Server is offline. Please try again later.");
+    const response = await fetch(`${SERVER_URL}/api/rooms/create`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (response.ok) {
+      const roomData: CreateRoomResponse = await response.json();
+      return { ...roomData, room_condition: "off" };
     }
-  };
-
-  const initializeAndStartCall = async (): Promise<void> => {
-    if (!user) {
-      Alert.alert("Error", "User not authenticated");
-      return;
-    }
-
-    setLoading(true);
-    setError(null);
-
-    try {
-      // Check if server is online first
-      const online = await checkServerOnline();
-      if (!online) {
-        throw new Error(
-          "The server appears to be offline. Please try again later."
-        );
-      }
-
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
-
-      if (!session) {
-        throw new Error("No active session");
-      }
-
-      let room = await checkExistingRoom(session.access_token);
-
-      if (!room) {
-        console.log("No existing room found, creating new room...");
-        room = await createRoom(session.access_token);
-
-        if (!room) {
-          throw new Error("Failed to create room");
-        }
-      }
-
-      setRoomInfo(room);
-      console.log("Room initialized:", room.room_name);
-
-      await startSession(session.access_token, room);
-    } catch (error: any) {
-      console.error("Initialize and start call error:", error);
-      setError(
-        error?.message ||
-          "Failed to initialize call. Please check your connection and try again."
-      );
-    } finally {
-      setLoading(false);
-    }
+    return null;
   };
 
   const startSession = async (
     accessToken: string,
     room: RoomInfo
   ): Promise<void> => {
-    try {
-      const response = await fetch(`${SERVER_URL}/api/sessions/start`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          "Content-Type": "application/json",
-        },
-      });
-
-      if (!response.ok) {
-        throw new Error("Failed to start session");
-      }
-
-      const sessionData: CurrentSession = await response.json();
-
-      setCurrentSession(sessionData);
-      setToken(sessionData.token);
-      setWsURL(sessionData.livekit_url);
-      setIsConnected(true);
-
-      console.log("Session started:", sessionData.session_id);
-      console.log("Room:", sessionData.room_name);
-    } catch (error) {
-      // Server likely offline/network error
-      throw new Error("Server is offline. Please try again later.");
-    }
-  };
-
-  const endSession = async (): Promise<void> => {
-    if (!currentSession || !user) return;
-    setShouldAutoStart(false);
-
-    try {
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
-      if (!session) return;
-
-      const response = await fetch(
-        `${SERVER_URL}/api/sessions/${currentSession.session_id}/end`,
-        {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${session.access_token}`,
-            "Content-Type": "application/json",
-          },
-        }
-      );
-
-      if (response.ok) {
-        console.log("Session ended successfully");
-      }
-      router.replace("/");
-    } catch (error) {
-      // Don't show error if server is offline on endSession
-      console.error("Error ending session:", error);
-    }
-
-    setIsConnected(false);
-    setCurrentSession(null);
-    setToken("");
-    setWsURL("");
-  };
-
-  const handleCancel = async (): Promise<void> => {
-    setShouldAutoStart(false); // Prevent auto-restart
-    await endSession();
-  };
-
-  const retryConnection = async (): Promise<void> => {
-    setError(null);
+    const response = await fetch(`${SERVER_URL}/api/sessions/start`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${accessToken}`,
+      },
+    });
+    if (!response.ok) throw new Error("Failed to start the session.");
+    const sessionData: CurrentSession = await response.json();
+    setCurrentSession(sessionData);
+    setToken(sessionData.token);
+    setWsURL(sessionData.livekit_url);
+    setIsConnected(true);
+    console.log("Session started:", sessionData.session_id);
     setLoading(false);
-    setShouldAutoStart(true); // Allow auto-start for retry
-    await initializeAndStartCall();
   };
 
-  if (!user) {
+  const handleCancel = () => {
+    setShouldAutoStart(false);
+    if (router) router.replace("/");
+  };
+
+  const retryConnection = () => {
+    setError(null);
+    setShouldAutoStart(true);
+  };
+
+  if (loading) {
     return (
       <View style={styles.setupContainer}>
-        <Text style={styles.title}>Rasmlai</Text>
-        <Text style={styles.subtitle}>Please log in to continue</Text>
-        <Text style={styles.note}>Redirecting to login...</Text>
+        <Text style={styles.title}>
+          {roomInfo ? "🔥 Connecting..." : "Setting up..."}
+        </Text>
+        <Text style={styles.subtitle}>
+          {roomInfo ? "Starting your session" : "Finding your safe space"}
+        </Text>
+        <ActivityIndicator
+          size="large"
+          color="#E53E3E"
+          style={{ marginTop: 20 }}
+        />
+        {roomInfo && (
+          <View style={styles.roomInfo}>
+            <Text style={styles.roomText}>Room: {roomInfo.room_name}</Text>
+          </View>
+        )}
+        <TouchableOpacity
+          style={[styles.button, styles.logoutButton]}
+          onPress={handleCancel}
+        >
+          <Text style={styles.buttonText}>Cancel</Text>
+        </TouchableOpacity>
       </View>
     );
   }
@@ -364,156 +310,149 @@ export default function App() {
       <View style={styles.setupContainer}>
         <Text style={styles.title}>Connection Error</Text>
         <Text style={styles.subtitle}>{error}</Text>
-        <Text style={styles.note}>
-          You will be redirected to the homepage shortly...
-        </Text>
+        <Text style={styles.note}>Redirecting to the homepage...</Text>
         <TouchableOpacity
           style={[styles.button, styles.callButton]}
           onPress={retryConnection}
-          disabled={loading}
         >
           <Text style={styles.buttonText}>Retry</Text>
         </TouchableOpacity>
         <TouchableOpacity
           style={[styles.button, styles.logoutButton]}
-          onPress={handleCancel}
+          onPress={() => router.replace("/")}
         >
-          <Text style={styles.buttonText}>Cancel</Text>
+          <Text style={styles.buttonText}>Go to Home</Text>
         </TouchableOpacity>
       </View>
     );
   }
 
-  if (isConnected) {
+  if (isConnected && wsURL && token) {
     return (
-      <LiveKitRoom
-        serverUrl={wsURL}
-        token={token}
-        connect={true}
-        options={{
-          adaptiveStream: { pixelDensity: "screen" },
-        }}
-        audio={true}
-        video={false}
-      >
-        <RoomView
-          onDisconnect={endSession}
-          roomName={roomInfo?.room_name || "Unknown Room"}
-          sessionId={currentSession?.session_id}
-        />
+      <LiveKitRoom serverUrl={wsURL} token={token} connect={true} audio={true}>
+        <RoomView onDisconnect={endSession} />
       </LiveKitRoom>
     );
   }
 
-  // Loading state - show while connecting
-  if (loading) {
-    return (
-      <View style={styles.setupContainer}>
-        <Text style={styles.title}>🔥 Connecting...</Text>
-        <Text style={styles.subtitle}>
-          {roomInfo
-            ? "Starting your vent session"
-            : "Setting up your safe space"}
-        </Text>
-        <ActivityIndicator
-          size="large"
-          color="#E53E3E"
-          style={{ marginTop: 20 }}
-        />
-
-        {roomInfo && (
-          <View style={styles.roomInfo}>
-            <Text style={styles.roomText}>Room: {roomInfo.room_name}</Text>
-          </View>
-        )}
-
-        <TouchableOpacity
-          style={[styles.button, styles.logoutButton]}
-          onPress={handleCancel}
-        >
-          <Text style={styles.buttonText}>Cancel</Text>
-        </TouchableOpacity>
-      </View>
-    );
-  }
-
-  return null;
+  return (
+    <View style={styles.setupContainer}>
+      <Text style={styles.title}>Welcome</Text>
+      <TouchableOpacity style={styles.button} onPress={initializeAndStartCall}>
+        <Text style={styles.buttonText}>Start Call</Text>
+      </TouchableOpacity>
+    </View>
+  );
 }
 
+// ---- LiveKit RoomView Component ---- //
 interface RoomViewProps {
   onDisconnect: () => void;
-  roomName: string;
-  sessionId?: string;
 }
 
-const RoomView: React.FC<RoomViewProps> = ({
-  onDisconnect,
-  roomName,
-  sessionId,
-}) => {
-  const [isCallActive, setIsCallActive] = useState(true);
-  const tracks = useTracks([Track.Source.Microphone]);
+const RoomView: React.FC<RoomViewProps> = ({ onDisconnect }) => {
+  const [statusMessage, setStatusMessage] = useState<string | null>(
+    "Agent is joining, please wait..."
+  );
+  const fadeAnim = useRef(new Animated.Value(0)).current;
 
-  const handleEndCall = () => {
-    setIsCallActive(false);
-    onDisconnect();
+  // Get reactive room state and participants
+  const room = useRoomContext();
+  const remoteParticipants = useRemoteParticipants();
+
+  const participantCount = remoteParticipants.length + 1;
+
+  // IMPORTANT: Change 'agent-identity' to match your AI agent's identity
+  const agent = remoteParticipants[0];
+
+  // --- THE FIX ---
+  // Access the `isSpeaking` property directly. This is safe and reactive.
+  const isAgentSpeaking = agent?.isSpeaking ?? false;
+  const isUserSpeaking = room.localParticipant?.isSpeaking ?? false;
+  // --- END OF FIX ---
+
+  useEffect(() => {
+    // Logic to handle agent joining message
+    if (participantCount > 1 && statusMessage !== null) {
+      setStatusMessage("Agent has joined. Begin.");
+      Animated.sequence([
+        Animated.timing(fadeAnim, {
+          toValue: 1,
+          duration: 400,
+          useNativeDriver: true,
+        }),
+        Animated.delay(2000),
+        Animated.timing(fadeAnim, {
+          toValue: 0,
+          duration: 400,
+          useNativeDriver: true,
+        }),
+      ]).start(() => setStatusMessage(null));
+    } else if (participantCount <= 1) {
+      setStatusMessage("Agent is joining, please wait...");
+      Animated.timing(fadeAnim, {
+        toValue: 1,
+        duration: 400,
+        useNativeDriver: true,
+      }).start();
+    }
+  }, [participantCount]);
+
+  const getSpeakingStatus = (): string => {
+    if (isAgentSpeaking) return "Replying...";
+    if (isUserSpeaking) return "Listening...";
+    return "";
   };
-
 
   return (
     <SafeAreaView style={styles.metalCallContainer}>
       <StatusBar barStyle="light-content" backgroundColor="#0a0a0a" />
-
-      {/* Main Content */}
       <View style={styles.metalCallContent}>
-        {/* Logo Space */}
         <View style={styles.logoContainer}>
           <Image
-            source={require("../../assets/images/rsml.png")}
+            source={require("../../assets/images/rsml.png")} // Make sure path is correct
             style={styles.logoPlaceholder}
           />
-  
         </View>
-
-        {/* R_AI Text */}
         <View style={styles.brandContainer}>
           <Text style={styles.brandText}>Rasmlai</Text>
         </View>
-
-        {/* Spacer */}
+        <View style={styles.statusContainer}>
+          <Animated.Text
+            style={[
+              styles.statusText,
+              { opacity: statusMessage ? fadeAnim : 1 },
+            ]}
+          >
+            {statusMessage ?? getSpeakingStatus()}
+          </Animated.Text>
+        </View>
         <View style={styles.spacer} />
-
-        {/* Control Button */}
         <View style={styles.controlContainer}>
           <TouchableOpacity
             style={[styles.controlButton, styles.endCallButton]}
-            onPress={handleEndCall}
+            onPress={onDisconnect}
             activeOpacity={0.8}
           >
             <View style={styles.controlButtonInner}>
-              <Text style={styles.controlButtonText}>{"END"}</Text>
+              <Text style={styles.controlButtonText}>END</Text>
             </View>
           </TouchableOpacity>
         </View>
-
-        {/* Bottom Spacer */}
         <View style={styles.bottomSpacer} />
       </View>
     </SafeAreaView>
   );
 };
 
+// ---- Styles ---- //
 const styles = StyleSheet.create({
   setupContainer: {
     flex: 1,
     justifyContent: "center",
     alignItems: "center",
     padding: 20,
-    backgroundColor: "#FFE6E6",
-  },
-  container: {
-    flex: 1,
-    backgroundColor: "#000",
+    backgroundColor: "#1a1a1a",
   },
   title: {
     fontSize: 24,
@@ -525,26 +464,23 @@ const styles = StyleSheet.create({
   subtitle: {
     fontSize: 16,
     marginBottom: 20,
-    color: "#666",
+    color: "#ccc",
     textAlign: "center",
   },
   button: {
-    backgroundColor: "#007AFF",
+    backgroundColor: "#E53E3E",
     paddingHorizontal: 30,
     paddingVertical: 15,
     borderRadius: 8,
-    minWidth: 120,
+    minWidth: 150,
     alignItems: "center",
     marginBottom: 10,
   },
   callButton: {
-    backgroundColor: "#E53E3E",
-    paddingHorizontal: 40,
-    paddingVertical: 20,
+    backgroundColor: "#4CAF50",
   },
   logoutButton: {
-    backgroundColor: "#FF3B30",
-    paddingHorizontal: 20,
+    backgroundColor: "#888",
     paddingVertical: 10,
   },
   buttonText: {
@@ -553,36 +489,28 @@ const styles = StyleSheet.create({
     fontWeight: "bold",
   },
   roomInfo: {
-    backgroundColor: "white",
-    padding: 20,
+    backgroundColor: "#2c2c2c",
+    padding: 15,
     borderRadius: 10,
-    marginBottom: 30,
-    width: "100%",
+    marginVertical: 20,
+    width: "90%",
     alignItems: "center",
   },
   roomText: {
     fontSize: 16,
     fontWeight: "bold",
-    color: "#333",
-    marginBottom: 5,
-  },
-  statusText: {
-    fontSize: 14,
-    color: "#666",
+    color: "#fff",
   },
   note: {
     fontSize: 12,
     color: "#888",
     textAlign: "center",
-    marginTop: 20,
-    marginBottom: 10,
+    marginTop: 15,
     fontStyle: "italic",
   },
-
-  // New Metal Call Screen Styles
   metalCallContainer: {
     flex: 1,
-    backgroundColor: "#0a0a0a", // Deep black metal background
+    backgroundColor: "#0a0a0a",
   },
   metalCallContent: {
     flex: 1,
@@ -600,38 +528,32 @@ const styles = StyleSheet.create({
     height: 120,
     backgroundColor: "transparent",
     borderRadius: 60,
-    justifyContent: "center",
-    alignItems: "center",
-    // borderWidth: 2,
-    // borderColor: "#333",
-    // shadowColor: "#000",
-    // shadowOffset: {
-    //   width: 0,
-    //   height: 4,
-    // },
-    // shadowOpacity: 0.3,
-    // shadowRadius: 5,
-    elevation: 8,
-  },
-  logoText: {
-    color: "#666",
-    fontSize: 16,
-    fontWeight: "bold",
-    letterSpacing: 2,
   },
   brandContainer: {
-    marginBottom: 40,
+    marginBottom: 20,
   },
   brandText: {
-    fontSize:30,
+    fontSize: 30,
     fontWeight: "300",
     color: "#ffffff",
     letterSpacing: 8,
     textAlign: "center",
     fontFamily: "monospace",
     textShadowColor: "#000",
-    textShadowOffset: { width: 2, height: 2 },
-    textShadowRadius: 4,
+    textShadowOffset: { width: 1, height: 1 },
+    textShadowRadius: 3,
+  },
+  statusContainer: {
+    height: 50,
+    justifyContent: "center",
+    alignItems: "center",
+    paddingHorizontal: 20,
+  },
+  statusText: {
+    fontSize: 18,
+    color: "white",
+    textAlign: "center",
+    fontWeight: "500",
   },
   spacer: {
     flex: 1,
@@ -647,18 +569,13 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     alignItems: "center",
     shadowColor: "#000",
-    shadowOffset: {
-      width: 0,
-      height: 8,
-    },
+    shadowOffset: { width: 0, height: 8 },
     shadowOpacity: 0.4,
     shadowRadius: 12,
     elevation: 15,
   },
-  startCallButton: {
-    backgroundColor: "#1a1a1a",
-    borderWidth: 3,
-    borderColor: "#00ff00",
+  endCallButton: {
+    backgroundColor: "#E53E3E",
   },
   controlButtonInner: {
     width: 110,
@@ -679,98 +596,5 @@ const styles = StyleSheet.create({
   },
   bottomSpacer: {
     height: 60,
-  },
-
-  // Legacy styles (keeping for other screens)
-  callContainer: {
-    flex: 1,
-    backgroundColor: "#1a1a1a",
-  },
-  callHeader: {
-    backgroundColor: "#2c2c2c",
-    paddingHorizontal: 20,
-    paddingVertical: 15,
-    borderBottomWidth: 1,
-    borderBottomColor: "#404040",
-  },
-  callHeaderContent: {
-    alignItems: "center",
-  },
-  callRoomTitle: {
-    color: "white",
-    fontSize: 20,
-    fontWeight: "bold",
-    textAlign: "center",
-  },
-  callSubtitle: {
-    color: "#FF6B6B",
-    fontSize: 14,
-    marginTop: 4,
-    textAlign: "center",
-    fontStyle: "italic",
-  },
-  callSessionText: {
-    color: "#ccc",
-    fontSize: 12,
-    marginTop: 4,
-    textAlign: "center",
-  },
-  callContent: {
-    flex: 1,
-    backgroundColor: "#1a1a1a",
-  },
-  callFooter: {
-    backgroundColor: "#2c2c2c",
-    paddingHorizontal: 20,
-    paddingVertical: 20,
-    borderTopWidth: 1,
-    borderTopColor: "#404040",
-  },
-  callControls: {
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  endCallButton: {
-    backgroundColor: "#E53E3E",
-    paddingHorizontal: 40,
-    paddingVertical: 15,
-    borderRadius: 1200,
-    minWidth: 140,
-    alignItems: "center",
-    shadowColor: "#000",
-    shadowOffset: {
-      width: 0,
-      height: 2,
-    },
-    shadowOpacity: 0.25,
-    shadowRadius: 3.84,
-    elevation: 5,
-  },
-  endCallText: {
-    color: "white",
-    fontSize: 18,
-    fontWeight: "bold",
-  },
-  tracksList: {
-    flex: 1,
-  },
-  tracksContainer: {
-    padding: 10,
-  },
-  participantView: {
-    height: Math.min(height * 0.4, 300),
-    marginVertical: 10,
-    marginHorizontal: 10,
-    backgroundColor: "#333",
-    borderRadius: 12,
-    justifyContent: "center",
-    alignItems: "center",
-    borderWidth: 1,
-    borderColor: "#555",
-  },
-  placeholderText: {
-    color: "#FF6B6B",
-    fontSize: 16,
-    fontWeight: "500",
   },
 });
