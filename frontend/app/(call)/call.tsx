@@ -2,8 +2,6 @@ import * as React from "react";
 import {
   StyleSheet,
   View,
-  FlatList,
-  ListRenderItem,
   Text,
   TouchableOpacity,
   Alert,
@@ -12,30 +10,28 @@ import {
   StatusBar,
   Dimensions,
   BackHandler,
+  Image,
+  Animated,
 } from "react-native";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import {
   AudioSession,
   LiveKitRoom,
-  useTracks,
-  TrackReferenceOrPlaceholder,
-  isTrackReference,
   registerGlobals,
+  useRoomContext,
+  useRemoteParticipants,
 } from "@livekit/react-native";
-import { Track } from "livekit-client";
 import { supabase } from "../../lib/supabase";
 import { User } from "@supabase/supabase-js";
 import { useRouter } from "expo-router";
 import { useFocusEffect } from "@react-navigation/native";
-import { Image } from "react-native";
 
 registerGlobals();
 
 const { width, height } = Dimensions.get("window");
 const SERVER_URL = process.env.EXPO_PUBLIC_SERVER_URL;
 
-
-console.log(SERVER_URL)
+console.log(SERVER_URL);
 
 interface RoomInfo {
   room_id: string;
@@ -89,7 +85,7 @@ export default function App() {
                 text: "End Call",
                 onPress: async () => {
                   await endSession();
-                  router.back();
+                  router.replace("/");
                 },
                 style: "destructive",
               },
@@ -329,6 +325,7 @@ export default function App() {
     } catch (error) {
       // Don't show error if server is offline on endSession
       console.error("Error ending session:", error);
+      router.replace("/");
     }
 
     setIsConnected(false);
@@ -451,14 +448,55 @@ const RoomView: React.FC<RoomViewProps> = ({
   roomName,
   sessionId,
 }) => {
-  const [isCallActive, setIsCallActive] = useState(true);
-  const tracks = useTracks([Track.Source.Microphone]);
+  const [statusMessage, setStatusMessage] = useState<string | null>(
+    "Agent is joining, please wait..."
+  );
+  const fadeAnim = useRef(new Animated.Value(0)).current;
 
-  const handleEndCall = () => {
-    setIsCallActive(false);
-    onDisconnect();
+  // Get reactive room state and participants
+  const room = useRoomContext();
+  const remoteParticipants = useRemoteParticipants();
+
+  const participantCount = remoteParticipants.length + 1;
+  const agent = remoteParticipants[0];
+  const isAgentSpeaking = agent?.isSpeaking ?? false;
+  const isUserSpeaking = room.localParticipant?.isSpeaking ?? false;
+
+  useEffect(() => {
+    if (participantCount > 1 && statusMessage !== null) {
+      setStatusMessage("Agent has joined. Begin.");
+      Animated.sequence([
+        Animated.timing(fadeAnim, {
+          toValue: 1,
+          duration: 400,
+          useNativeDriver: true,
+        }),
+        Animated.delay(2000),
+        Animated.timing(fadeAnim, {
+          toValue: 0,
+          duration: 400,
+          useNativeDriver: true,
+        }),
+      ]).start(() => setStatusMessage(null));
+    } else if (participantCount <= 1) {
+      setStatusMessage("Agent is joining, please wait...");
+      Animated.timing(fadeAnim, {
+        toValue: 1,
+        duration: 400,
+        useNativeDriver: true,
+      }).start();
+    }
+  }, [participantCount]);
+
+  const getSpeakingStatus = (): string => {
+    if (isAgentSpeaking) return "Replying...";
+    if (isUserSpeaking) return "Listening...";
+    return "";
   };
 
+  const handleEndCall = () => {
+    onDisconnect();
+  };
 
   return (
     <SafeAreaView style={styles.metalCallContainer}>
@@ -472,12 +510,23 @@ const RoomView: React.FC<RoomViewProps> = ({
             source={require("../../assets/images/rsml.png")}
             style={styles.logoPlaceholder}
           />
-  
         </View>
 
         {/* R_AI Text */}
         <View style={styles.brandContainer}>
           <Text style={styles.brandText}>Rasmlai</Text>
+        </View>
+
+        {/* Status Container */}
+        <View style={styles.statusContainer}>
+          <Animated.Text
+            style={[
+              styles.statusText,
+              { opacity: statusMessage ? fadeAnim : 1 },
+            ]}
+          >
+            {statusMessage ?? getSpeakingStatus()}
+          </Animated.Text>
         </View>
 
         {/* Spacer */}
@@ -567,8 +616,10 @@ const styles = StyleSheet.create({
     marginBottom: 5,
   },
   statusText: {
-    fontSize: 14,
-    color: "#666",
+    fontSize: 18,
+    color: "white",
+    textAlign: "center",
+    fontWeight: "500",
   },
   note: {
     fontSize: 12,
@@ -602,28 +653,13 @@ const styles = StyleSheet.create({
     borderRadius: 60,
     justifyContent: "center",
     alignItems: "center",
-    // borderWidth: 2,
-    // borderColor: "#333",
-    // shadowColor: "#000",
-    // shadowOffset: {
-    //   width: 0,
-    //   height: 4,
-    // },
-    // shadowOpacity: 0.3,
-    // shadowRadius: 5,
     elevation: 8,
   },
-  logoText: {
-    color: "#666",
-    fontSize: 16,
-    fontWeight: "bold",
-    letterSpacing: 2,
-  },
   brandContainer: {
-    marginBottom: 40,
+    marginBottom: 20,
   },
   brandText: {
-    fontSize:30,
+    fontSize: 30,
     fontWeight: "300",
     color: "#ffffff",
     letterSpacing: 8,
@@ -632,6 +668,13 @@ const styles = StyleSheet.create({
     textShadowColor: "#000",
     textShadowOffset: { width: 2, height: 2 },
     textShadowRadius: 4,
+  },
+  statusContainer: {
+    height: 50,
+    justifyContent: "center",
+    alignItems: "center",
+    paddingHorizontal: 20,
+    marginBottom: 20,
   },
   spacer: {
     flex: 1,
@@ -655,10 +698,8 @@ const styles = StyleSheet.create({
     shadowRadius: 12,
     elevation: 15,
   },
-  startCallButton: {
-    backgroundColor: "#1a1a1a",
-    borderWidth: 3,
-    borderColor: "#00ff00",
+  endCallButton: {
+    backgroundColor: "#E53E3E",
   },
   controlButtonInner: {
     width: 110,
@@ -679,98 +720,5 @@ const styles = StyleSheet.create({
   },
   bottomSpacer: {
     height: 60,
-  },
-
-  // Legacy styles (keeping for other screens)
-  callContainer: {
-    flex: 1,
-    backgroundColor: "#1a1a1a",
-  },
-  callHeader: {
-    backgroundColor: "#2c2c2c",
-    paddingHorizontal: 20,
-    paddingVertical: 15,
-    borderBottomWidth: 1,
-    borderBottomColor: "#404040",
-  },
-  callHeaderContent: {
-    alignItems: "center",
-  },
-  callRoomTitle: {
-    color: "white",
-    fontSize: 20,
-    fontWeight: "bold",
-    textAlign: "center",
-  },
-  callSubtitle: {
-    color: "#FF6B6B",
-    fontSize: 14,
-    marginTop: 4,
-    textAlign: "center",
-    fontStyle: "italic",
-  },
-  callSessionText: {
-    color: "#ccc",
-    fontSize: 12,
-    marginTop: 4,
-    textAlign: "center",
-  },
-  callContent: {
-    flex: 1,
-    backgroundColor: "#1a1a1a",
-  },
-  callFooter: {
-    backgroundColor: "#2c2c2c",
-    paddingHorizontal: 20,
-    paddingVertical: 20,
-    borderTopWidth: 1,
-    borderTopColor: "#404040",
-  },
-  callControls: {
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  endCallButton: {
-    backgroundColor: "#E53E3E",
-    paddingHorizontal: 40,
-    paddingVertical: 15,
-    borderRadius: 1200,
-    minWidth: 140,
-    alignItems: "center",
-    shadowColor: "#000",
-    shadowOffset: {
-      width: 0,
-      height: 2,
-    },
-    shadowOpacity: 0.25,
-    shadowRadius: 3.84,
-    elevation: 5,
-  },
-  endCallText: {
-    color: "white",
-    fontSize: 18,
-    fontWeight: "bold",
-  },
-  tracksList: {
-    flex: 1,
-  },
-  tracksContainer: {
-    padding: 10,
-  },
-  participantView: {
-    height: Math.min(height * 0.4, 300),
-    marginVertical: 10,
-    marginHorizontal: 10,
-    backgroundColor: "#333",
-    borderRadius: 12,
-    justifyContent: "center",
-    alignItems: "center",
-    borderWidth: 1,
-    borderColor: "#555",
-  },
-  placeholderText: {
-    color: "#FF6B6B",
-    fontSize: 16,
-    fontWeight: "500",
   },
 });
