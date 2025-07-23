@@ -688,7 +688,7 @@ async def create_subscription(
             "customer_notify": 1,
 
 
-            "start_at": int((datetime.now(timezone.utc) + timedelta(minutes=3)).timestamp()),
+            "start_at": int((datetime.now(timezone.utc) + timedelta(minutes=10)).timestamp()),
 
             "notes": {
                 "user_id": user_id,
