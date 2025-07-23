@@ -11,5 +11,7 @@ dependencies = [
     "livekit-api>=1.0.3",
     "livekit-plugins-noise-cancellation~=0.2",
     "python-dotenv>=1.1.1",
+    "razorpay>=1.4.2",
+    "setuptools>=80.9.0",
     "uvicorn>=0.35.0",
 ]

@@ -1,6 +1,6 @@
 import os
 import asyncio
-import asyncpg # type: ignore
+import asyncpg  # type: ignore
 import requests
 from typing import Optional, Dict, Any
 from fastapi import FastAPI, Query, Request, HTTPException, Depends
@@ -14,6 +14,13 @@ import jwt
 import logging
 from contextlib import asynccontextmanager
 import subprocess
+from datetime import datetime, timedelta, timezone
+# Payment imports
+import razorpay
+import hmac
+import hashlib
+from datetime import datetime, timedelta
+from decimal import Decimal
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -53,6 +60,13 @@ SUPABASE_JWT_SECRET = os.getenv('SUPABASE_JWT_SECRET')
 if not SUPABASE_JWT_SECRET:
     raise ValueError("SUPABASE_JWT_SECRET is required")
 
+# Razorpay configuration
+RAZORPAY_KEY_ID = os.getenv('RAZORPAY_KEY_ID')
+RAZORPAY_KEY_SECRET = os.getenv('RAZORPAY_KEY_SECRET')
+if not RAZORPAY_KEY_ID or not RAZORPAY_KEY_SECRET:
+    raise ValueError("RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET are required")
+razorpay_client = razorpay.Client(auth=(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET))
+
 # Database connection pool
 db_pool = None
 
@@ -85,7 +99,7 @@ def stop_agent(room_name: str):
     else:
         logger.warning(f"No active agent found for room {room_name}")
 
-# Pydantic models
+# --- Pydantic models ---
 class UserCreate(BaseModel):
     name: str
     age: Optional[int] = None
@@ -114,7 +128,39 @@ class RoomInfo(BaseModel):
     room_name: str
     room_condition: str
 
-# Database connection management
+# Payment models
+class PlanResponse(BaseModel):
+    id: str
+    name: str
+    monthly_price: int
+    monthly_limit: int
+    created_at: str
+
+class PaymentResponse(BaseModel):
+    id: str
+    user_id: str
+    plan_id: Optional[str]
+    razorpay_customer_id: str
+    razorpay_subscription_id: str
+    status: str
+    session_limit: int
+    session_used: int
+    start_at: str
+    end_at: Optional[str]
+    next_billing_at: Optional[str]
+    created_at: str
+    updated_at: str
+
+class CreateSubscriptionRequest(BaseModel):
+    plan_id: str
+    customer_email: str
+    customer_name: Optional[str] = None
+
+class SubscriptionWebhookPayload(BaseModel):
+    event: str
+    payload: dict
+
+# --- Database connection management ---
 async def get_db_pool():
     global db_pool
     if db_pool is None:
@@ -153,7 +199,6 @@ async def get_current_user_with_metadata(credentials: HTTPAuthorizationCredentia
         logger.error(f"Unexpected error in authentication: {str(e)}")
         raise HTTPException(status_code=401, detail="Authentication failed")
 
-
 async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
     user_id, _ = await get_current_user_with_metadata(credentials)
     return user_id
@@ -166,49 +211,34 @@ async def ensure_user_exists(conn, user_id: str, supabase_user: Optional[Dict] =
             "SELECT id FROM users WHERE id = $1", user_id
         )
         if not existing_user:
-            # Extract user data from Supabase user metadata
             name = 'Anonymous'
             age = None
-            
             if supabase_user:
-                # Get data from user_metadata (set during signup)
                 user_metadata = supabase_user.get('user_metadata', {})
                 name = user_metadata.get('name', 'Anonymous')
                 age = user_metadata.get('age')
-                
-                # Fallback to raw_user_meta_data if user_metadata is empty
                 if not user_metadata:
                     raw_metadata = supabase_user.get('raw_user_meta_data', {})
                     name = raw_metadata.get('name', 'Anonymous')
                     age = raw_metadata.get('age')
-            
-            # Create user if doesn't exist
             await conn.execute("""
                 INSERT INTO users (id, name, age, onboarding, created_at, updated_at)
                 VALUES ($1, $2, $3, 'Pending', NOW(), NOW())
             """, user_id, name, age)
-            
             logger.info(f"Created new user: {user_id} with name: {name}, age: {age}")
-        
-        # Check if user has a room (should be auto-created by trigger)
         room = await conn.fetchrow(
             "SELECT id, room_name FROM room WHERE user_id = $1", user_id
         )
-        
         if not room:
-            # Fallback: create room manually if trigger didn't work
             room_name = f"room_{user_id}"
             room_id = await conn.fetchval("""
                 INSERT INTO room (user_id, room_name, room_condition, created_at, updated_at)
                 VALUES ($1, $2, 'off', NOW(), NOW())
                 RETURNING id
             """, user_id, room_name)
-            
             logger.info(f"Created room for user {user_id}: {room_name}")
             return str(room_id), room_name
-        
         return str(room['id']), room['room_name']
-        
     except Exception as e:
         logger.error(f"Error ensuring user exists: {str(e)}")
         raise HTTPException(status_code=500, detail="Database error")
@@ -250,50 +280,67 @@ async def end_session(conn, session_id: str, user_id: str):
         logger.error(f"Error ending session: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to end session")
 
+# --- Payment utility ---
+def verify_razorpay_signature(payload_body: bytes, signature: str, secret: str) -> bool:
+    """Verify Razorpay webhook signature"""
+    try:
+        expected_signature = hmac.new(
+            secret.encode('utf-8'),
+            payload_body,
+            hashlib.sha256
+        ).hexdigest()
+        return hmac.compare_digest(expected_signature, signature)
+    except Exception:
+        return False
+
+# --- Payment/check logic ---
+async def check_payment_status(user_id: str, conn) -> bool:
+    """Check if user has active payment and available sessions"""
+    try:
+        payment = await conn.fetchrow("""
+            SELECT session_limit, session_used, status
+            FROM payments 
+            WHERE user_id = $1 AND status = 'active'
+            ORDER BY created_at DESC
+            LIMIT 1
+        """, user_id)
+        if not payment:
+            return False
+        if payment['session_used'] >= payment['session_limit']:
+            return False
+        return True
+    except Exception as e:
+        logger.error(f"Error checking payment status: {str(e)}")
+        return False
+
+# --- ROUTES ---
+
 @app.post("/api/users/profile/sync")
 async def sync_user_profile_from_token(
     credentials: HTTPAuthorizationCredentials = Depends(security),
     conn = Depends(get_db)
 ):
-    """
-    Sync user profile from JWT token metadata to database
-    This extracts name and age from the token and stores it in the database
-    """
     try:
-        # Get user ID and full token payload
         user_id, token_payload = await get_current_user_with_metadata(credentials)
-        
-        # Extract user metadata from token
         user_metadata = token_payload.get('user_metadata', {})
         if not user_metadata:
-            # Fallback to raw_user_meta_data
             user_metadata = token_payload.get('raw_user_meta_data', {})
-        
         name = user_metadata.get('name', 'Anonymous')
         age = user_metadata.get('age')
-        
         logger.info(f"Syncing profile for user {user_id}: name={name}, age={age}")
-        
-        # Ensure user exists and update profile
         await ensure_user_exists(conn, user_id, token_payload)
-        
-        # Update user profile with metadata from token
         await conn.execute("""
             UPDATE users 
             SET name = $1, age = $2, onboarding = 'Done', updated_at = NOW()
             WHERE id = $3
         """, name, age, user_id)
-        
-        # Get updated user data
         user_data = await conn.fetchrow("""
             SELECT id, name, age, onboarding, created_at, updated_at 
             FROM users 
             WHERE id = $1
         """, user_id)
-        
         if not user_data:
             raise HTTPException(status_code=404, detail="User not found after sync")
-        
         return UserProfileResponse(
             user_id=str(user_data['id']), 
             name=user_data['name'],
@@ -302,12 +349,12 @@ async def sync_user_profile_from_token(
             created_at=user_data['created_at'].isoformat(),
             updated_at=user_data['updated_at'].isoformat()
         )
-        
     except HTTPException:
-        raise  # Re-raise HTTP exceptions as-is
+        raise
     except Exception as e:
         logger.error(f"Error syncing user profile: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to sync user profile")
+
 @app.post("/api/users/setup")
 async def setup_user(
     user_data: UserCreate,
@@ -339,8 +386,19 @@ async def start_session(
     conn = Depends(get_db)
 ):
     try:
+        # Payment check integration
+        if not await check_payment_status(user_id, conn):
+            raise HTTPException(
+                status_code=403, 
+                detail="No active payment plan or session limit exceeded"
+            )
         room_id, room_name = await ensure_user_exists(conn, user_id)
         session_id = await create_session(conn, user_id, room_id)
+        await conn.execute("""
+            UPDATE payments 
+            SET session_used = session_used + 1, updated_at = NOW()
+            WHERE user_id = $1 AND status = 'active'
+        """, user_id)
         token = api.AccessToken(
             LIVEKIT_API_KEY,
             LIVEKIT_API_SECRET
@@ -351,10 +409,6 @@ async def start_session(
              room=room_name,
              room_create=True,
          ))
-        # Start (or restart) agent process for this room
-        # if room_name in active_agents:
-        #     stop_agent(room_name)
-        # trigger_agent_connection(room_name)
         return SessionResponse(
             session_id=session_id,
             room_name=room_name,
@@ -362,6 +416,8 @@ async def start_session(
             token=token.to_jwt(),
             livekit_url=LIVEKIT_URL
         )
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error starting session: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to start session")
@@ -458,7 +514,6 @@ def health_check():
 async def ping():
     return {"message": "pong"}
 
-# --- LiveKit webhook handler: STOP AGENT ON ROOM FINISHED ---
 @app.post("/livekit-webhook")
 async def livekit_webhook(request: Request):
     try:
@@ -466,7 +521,6 @@ async def livekit_webhook(request: Request):
         event = payload.get("event")
         room_name = payload.get("room", {}).get("name")
         logger.info(f"Webhook event: {event} for room: {room_name}")
-
         if event == "room_finished" and room_name:
             stop_agent(room_name)
         return {"status": "received"}
@@ -476,6 +530,432 @@ async def livekit_webhook(request: Request):
             status_code=500,
             content={"error": "Webhook handling failed"}
         )
+
+# --- Payment endpoints ---
+@app.get("/api/plans", response_model=list[PlanResponse])
+async def get_plans(conn = Depends(get_db)):
+    try:
+        plans = await conn.fetch("""
+            SELECT id, name, monthly_price, monthly_limit, created_at
+            FROM plans
+            ORDER BY monthly_price ASC
+        """)
+        return [
+            PlanResponse(
+                id=str(plan['id']),
+                name=plan['name'],
+                monthly_price=plan['monthly_price'],
+                monthly_limit=plan['monthly_limit'],
+                created_at=plan['created_at'].isoformat()
+            )
+            for plan in plans
+        ]
+    except Exception as e:
+        logger.error(f"Error fetching plans: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to fetch plans")
+
+@app.post("/api/payments/create-customer")
+async def create_razorpay_customer(
+    customer_data: dict,
+    user_id: str = Depends(get_current_user),
+    conn = Depends(get_db)
+):
+    try:
+        user = await conn.fetchrow("SELECT name FROM users WHERE id = $1", user_id)
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        customer_data_razorpay = {
+            "name": user['name'],
+            "email": customer_data.get("email"),
+            "contact": customer_data.get("phone", ""),
+            "notes": {
+                "user_id": user_id
+            }
+        }
+        customer = razorpay_client.customer.create(customer_data_razorpay)
+        return {
+            "customer_id": customer["id"],
+            "status": "created"
+        }
+    except Exception as e:
+        logger.error(f"Error creating Razorpay customer: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to create customer")
+    
+@app.post("/api/payments/create-subscription")
+async def create_subscription(
+    request: CreateSubscriptionRequest,
+    user_id: str = Depends(get_current_user),
+    conn = Depends(get_db)
+):
+    try:
+        # Get plan details from your database
+        plan = await conn.fetchrow("""
+            SELECT id, name, monthly_price, monthly_limit, razorpay_plan_id 
+            FROM plans WHERE id = $1
+        """, request.plan_id)
+        
+        if not plan:
+            raise HTTPException(status_code=404, detail="Plan not found")
+
+        # Get user details
+        user = await conn.fetchrow("SELECT name FROM users WHERE id = $1", user_id)
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        # Create or get customer
+        customer_data = {
+            "name": request.customer_name or user['name'],
+            "email": request.customer_email,
+            "contact": "",  # Optional field
+            "notes": {
+                "user_id": user_id
+            }
+        }
+        
+        logger.info(f"Creating customer with data: {customer_data}")
+        customer = razorpay_client.customer.create(customer_data)
+        logger.info(f"Customer created: {customer['id']}")
+
+        # Handle Razorpay plan creation/retrieval
+        razorpay_plan_id = plan.get('razorpay_plan_id')
+        
+        if not razorpay_plan_id:
+            # Create plan in Razorpay if not exists
+            try:
+                razorpay_plan_data = {
+                    "period": "monthly",
+                    "interval": 1,
+                    "item": {
+                        "name": plan['name'],
+                        "amount": plan['monthly_price'] * 100,  # Convert to paise
+                        "currency": "INR"
+                    },
+                    "notes": {
+                        "plan_id": str(plan['id'])
+                    }
+                }
+                
+                logger.info(f"Creating Razorpay plan with data: {razorpay_plan_data}")
+                razorpay_plan = razorpay_client.plan.create(razorpay_plan_data)
+                razorpay_plan_id = razorpay_plan["id"]
+                
+                # Update your database with the Razorpay plan ID
+                await conn.execute("""
+                    UPDATE plans 
+                    SET razorpay_plan_id = $1, updated_at = NOW()
+                    WHERE id = $2
+                """, razorpay_plan_id, plan['id'])
+                
+                logger.info(f"Razorpay plan created: {razorpay_plan_id}")
+                
+            except Exception as e:
+                logger.error(f"Error creating Razorpay plan: {str(e)}")
+                # If plan creation fails, try to find existing plan
+                try:
+                    plans = razorpay_client.plan.all()
+                    existing_plan = None
+                    for rp in plans['items']:
+                        if (rp['item']['name'] == plan['name'] and 
+                            rp['item']['amount'] == plan['monthly_price'] * 100):
+                            existing_plan = rp
+                            break
+                    
+                    if existing_plan:
+                        razorpay_plan_id = existing_plan['id']
+                        await conn.execute("""
+                            UPDATE plans 
+                            SET razorpay_plan_id = $1, updated_at = NOW()
+                            WHERE id = $2
+                        """, razorpay_plan_id, plan['id'])
+                    else:
+                        raise HTTPException(
+                            status_code=500, 
+                            detail=f"Failed to create or find Razorpay plan: {str(e)}"
+                        )
+                except Exception as fallback_error:
+                    logger.error(f"Fallback plan search failed: {str(fallback_error)}")
+                    raise HTTPException(
+                        status_code=500, 
+                        detail="Failed to create subscription plan"
+                    )
+
+        # Create subscription
+        subscription_data = {
+            "plan_id": razorpay_plan_id,
+            "customer_id": customer["id"],
+            "quantity": 1,
+            "total_count": 12,  # 12 months
+            "customer_notify": 1,
+
+
+            "start_at": int((datetime.now(timezone.utc) + timedelta(minutes=3)).timestamp()),
+
+            "notes": {
+                "user_id": user_id,
+                "plan_id": request.plan_id
+            }
+        }
+        
+        logger.info(f"Creating subscription with data: {subscription_data}")
+        subscription = razorpay_client.subscription.create(subscription_data)
+        logger.info(f"Subscription created: {subscription['id']}")
+
+        # Store in database
+        start_at = datetime.utcnow()
+        next_billing_at = start_at + timedelta(days=30)
+        
+        payment_id = await conn.fetchval("""
+            INSERT INTO payments (
+                user_id, plan_id, razorpay_customer_id, razorpay_subscription_id,
+                status, session_limit, session_used, start_at, next_billing_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            RETURNING id
+        """, 
+            user_id, request.plan_id, customer["id"], subscription["id"],
+            "created",  # Initial status
+            plan['monthly_limit'], 0, start_at, next_billing_at
+        )
+
+        return {
+            "subscription_id": subscription["id"],
+            "payment_id": str(payment_id),
+            "short_url": subscription.get("short_url"),
+            "status": subscription["status"],
+            "customer_id": customer["id"],
+            "plan_id": razorpay_plan_id
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating subscription: {str(e)}")
+        logger.error(f"Exception type: {type(e)}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"Failed to create subscription: {str(e)}")
+
+
+@app.get("/api/payments/current", response_model=PaymentResponse)
+async def get_current_payment(
+    user_id: str = Depends(get_current_user),
+    conn = Depends(get_db)
+):
+    try:
+        payment = await conn.fetchrow("""
+            SELECT p.*, pl.name as plan_name
+            FROM payments p
+            LEFT JOIN plans pl ON p.plan_id = pl.id
+            WHERE p.user_id = $1 AND p.status = 'active'
+            ORDER BY p.created_at DESC
+            LIMIT 1
+        """, user_id)
+        if not payment:
+            raise HTTPException(status_code=404, detail="No active payment found")
+        return PaymentResponse(
+            id=str(payment['id']),
+            user_id=str(payment['user_id']),
+            plan_id=str(payment['plan_id']) if payment['plan_id'] else None,
+            razorpay_customer_id=payment['razorpay_customer_id'],
+            razorpay_subscription_id=payment['razorpay_subscription_id'],
+            status=payment['status'],
+            session_limit=payment['session_limit'],
+            session_used=payment['session_used'],
+            start_at=payment['start_at'].isoformat(),
+            end_at=payment['end_at'].isoformat() if payment['end_at'] else None,
+            next_billing_at=payment['next_billing_at'].isoformat() if payment['next_billing_at'] else None,
+            created_at=payment['created_at'].isoformat(),
+            updated_at=payment['updated_at'].isoformat()
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching current payment: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to fetch payment details")
+
+@app.get("/api/payments/history")
+async def get_payment_history(
+    user_id: str = Depends(get_current_user),
+    conn = Depends(get_db)
+):
+    try:
+        payments = await conn.fetch("""
+            SELECT p.*, pl.name as plan_name
+            FROM payments p
+            LEFT JOIN plans pl ON p.plan_id = pl.id
+            WHERE p.user_id = $1
+            ORDER BY p.created_at DESC
+        """, user_id)
+        return [
+            {
+                "id": str(payment['id']),
+                "plan_name": payment['plan_name'],
+                "status": payment['status'],
+                "session_limit": payment['session_limit'],
+                "session_used": payment['session_used'],
+                "start_at": payment['start_at'].isoformat(),
+                "end_at": payment['end_at'].isoformat() if payment['end_at'] else None,
+                "created_at": payment['created_at'].isoformat()
+            }
+            for payment in payments
+        ]
+    except Exception as e:
+        logger.error(f"Error fetching payment history: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to fetch payment history")
+
+@app.post("/api/payments/cancel-subscription")
+async def cancel_subscription(
+    user_id: str = Depends(get_current_user),
+    conn = Depends(get_db)
+):
+    try:
+        payment = await conn.fetchrow("""
+            SELECT razorpay_subscription_id, id
+            FROM payments 
+            WHERE user_id = $1 AND status = 'active'
+            ORDER BY created_at DESC
+            LIMIT 1
+        """, user_id)
+        if not payment:
+            raise HTTPException(status_code=404, detail="No active subscription found")
+        razorpay_client.subscription.cancel(payment['razorpay_subscription_id'])
+        await conn.execute("""
+            UPDATE payments 
+            SET status = 'cancelled', updated_at = NOW()
+            WHERE id = $1
+        """, payment['id'])
+        return {"status": "cancelled", "message": "Subscription cancelled successfully"}
+    except Exception as e:
+        logger.error(f"Error cancelling subscription: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to cancel subscription")
+
+@app.post("/api/payments/usage/increment")
+async def increment_session_usage(
+    user_id: str = Depends(get_current_user),
+    conn = Depends(get_db)
+):
+    try:
+        payment = await conn.fetchrow("""
+            SELECT id, session_limit, session_used
+            FROM payments 
+            WHERE user_id = $1 AND status = 'active'
+            ORDER BY created_at DESC
+            LIMIT 1
+        """, user_id)
+        if not payment:
+            raise HTTPException(status_code=404, detail="No active payment plan found")
+        if payment['session_used'] >= payment['session_limit']:
+            raise HTTPException(status_code=403, detail="Session limit exceeded")
+        new_usage = await conn.fetchval("""
+            UPDATE payments 
+            SET session_used = session_used + 1, updated_at = NOW()
+            WHERE id = $1
+            RETURNING session_used
+        """, payment['id'])
+        return {
+            "session_used": new_usage,
+            "session_limit": payment['session_limit'],
+            "remaining": payment['session_limit'] - new_usage
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error incrementing session usage: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to update usage")
+
+@app.get("/api/payments/usage")
+async def get_usage_stats(
+    user_id: str = Depends(get_current_user),
+    conn = Depends(get_db)
+):
+    try:
+        payment = await conn.fetchrow("""
+            SELECT session_limit, session_used, status, next_billing_at
+            FROM payments 
+            WHERE user_id = $1 AND status = 'active'
+            ORDER BY created_at DESC
+            LIMIT 1
+        """, user_id)
+        if not payment:
+            return {
+                "session_limit": 0,
+                "session_used": 0,
+                "remaining": 0,
+                "status": "no_plan",
+                "next_billing_at": None
+            }
+        remaining = payment['session_limit'] - payment['session_used']
+        return {
+            "session_limit": payment['session_limit'],
+            "session_used": payment['session_used'],
+            "remaining": remaining,
+            "status": payment['status'],
+            "next_billing_at": payment['next_billing_at'].isoformat() if payment['next_billing_at'] else None
+        }
+    except Exception as e:
+        logger.error(f"Error fetching usage stats: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to fetch usage statistics")
+
+@app.post("/api/payments/webhook")
+async def razorpay_webhook(
+    request: Request,
+    conn = Depends(get_db)
+):
+    try:
+        body = await request.body()
+        signature = request.headers.get('X-Razorpay-Signature')
+        if not signature:
+            raise HTTPException(status_code=400, detail="Missing signature")
+        if not verify_razorpay_signature(body, signature, RAZORPAY_KEY_SECRET):
+            raise HTTPException(status_code=400, detail="Invalid signature")
+        payload = await request.json()
+        event = payload.get('event')
+        subscription_data = payload.get('payload', {}).get('subscription', {})
+        logger.info(f"Received webhook event: {event}")
+        if not subscription_data:
+            return {"status": "ignored", "reason": "no subscription data"}
+        subscription_id = subscription_data.get('id')
+        if not subscription_id:
+            return {"status": "ignored", "reason": "no subscription id"}
+        if event == 'subscription.activated':
+            await conn.execute("""
+                UPDATE payments 
+                SET status = 'active', updated_at = NOW()
+                WHERE razorpay_subscription_id = $1
+            """, subscription_id)
+        elif event == 'subscription.cancelled':
+            await conn.execute("""
+                UPDATE payments 
+                SET status = 'cancelled', end_at = NOW(), updated_at = NOW()
+                WHERE razorpay_subscription_id = $1
+            """, subscription_id)
+        elif event == 'subscription.charged':
+            next_billing = subscription_data.get('next_billing_at')
+            if next_billing:
+                next_billing_dt = datetime.fromtimestamp(next_billing)
+                await conn.execute("""
+                    UPDATE payments 
+                    SET session_used = 0, next_billing_at = $1, updated_at = NOW()
+                    WHERE razorpay_subscription_id = $2
+                """, next_billing_dt, subscription_id)
+        elif event == 'subscription.paused':
+            await conn.execute("""
+                UPDATE payments 
+                SET status = 'paused', updated_at = NOW()
+                WHERE razorpay_subscription_id = $1
+            """, subscription_id)
+        elif event == 'subscription.resumed':
+            await conn.execute("""
+                UPDATE payments 
+                SET status = 'active', updated_at = NOW()
+                WHERE razorpay_subscription_id = $1
+            """, subscription_id)
+        return {"status": "processed", "event": event}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error processing webhook: {str(e)}")
+        raise HTTPException(status_code=500, detail="Webhook processing failed")
 
 # --- Startup and shutdown events ---
 @asynccontextmanager
@@ -489,7 +969,6 @@ async def lifespan(app: FastAPI):
         if db_pool:
             await db_pool.close()
             logger.info("Database connection pool closed")
-        # Also terminate all agent processes on shutdown
         for room, proc in active_agents.items():
             logger.info(f"Shutting down agent for room {room}, PID {proc.pid}")
             proc.terminate()

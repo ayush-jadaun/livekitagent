@@ -1,0 +1,93 @@
+# macOS
+.DS_Store
+backend/
+# Node modules
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-lock.yaml
+
+# Android
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/gradle.properties
+*.keystore
+
+# iOS
+ios/build/
+ios/Pods/
+ios/Podfile.lock
+ios/*.xcworkspace
+ios/*.xcuserdata
+ios/Runner.xcworkspace
+ios/Runner.xcodeproj/project.xcworkspace/xcuserdata
+
+# Cache & build systems
+.expo/
+.expo-shared/
+.expo-cache/
+dist/
+build/
+.tmp/
+temp/
+*.tmp
+*.temp
+
+# Environment & secrets
+.env*
+!.env.example
+*.key
+*.pem
+
+# Git & version control
+.git/
+.gitignore
+
+# IDE & Editor
+.vscode/
+.idea/
+*.swp
+
+# Logs
+*.log
+
+# Test and coverage
+coverage/
+jest-output/
+__tests__/
+__mocks__/
+test/
+tests/
+*.spec.js
+*.test.js
+
+# Assets that are too large or unnecessary for build
+*.psd
+*.ai
+*.xcf
+*.sketch
+*.zip
+*.rar
+*.tar
+*.gz
+*.7z
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.webm
+*.wav
+*.ogg
+*.mp3
+
+# Misc
+*.bak
+*.orig
+*.old
+*.swp
+
+# Ignore metro bundler cache
+metro-cache/
