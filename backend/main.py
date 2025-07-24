@@ -72,6 +72,9 @@ db_pool = None
 
 # --- AGENT PROCESS MANAGEMENT ---
 active_agents: Dict[str, subprocess.Popen] = {}  # room_name -> process
+RAZORPAY_WEBHOOK_SECRET = os.getenv('RAZORPAY_WEBHOOK_SECRET')
+if not RAZORPAY_WEBHOOK_SECRET:
+    raise ValueError("RAZORPAY_WEBHOOK_SECRET is required")
 
 def trigger_agent_connection(room_name: str):
     """Start agent process for the room via subprocess and track it."""
@@ -289,29 +292,86 @@ def verify_razorpay_signature(payload_body: bytes, signature: str, secret: str) 
             payload_body,
             hashlib.sha256
         ).hexdigest()
+        
+        # Razorpay sends signature in format: "sha256=hash"
+        # Extract just the hash part
+        if signature.startswith('sha256='):
+            signature = signature[7:]
+        
         return hmac.compare_digest(expected_signature, signature)
-    except Exception:
+    except Exception as e:
+        logger.error(f"Signature verification error: {e}")
         return False
 
 # --- Payment/check logic ---
-async def check_payment_status(user_id: str, conn) -> bool:
+async def check_payment_status(user_id: str, conn) -> tuple[bool, str]:
     """Check if user has active payment and available sessions"""
     try:
         payment = await conn.fetchrow("""
-            SELECT session_limit, session_used, status
+            SELECT session_limit, session_used, status, end_at, next_billing_at, razorpay_subscription_id
             FROM payments 
-            WHERE user_id = $1 AND status = 'active'
+            WHERE user_id = $1 AND status IN ('active', 'past_due', 'authenticated', 'created')
             ORDER BY created_at DESC
             LIMIT 1
         """, user_id)
+        
         if not payment:
-            return False
+            return False, "No active subscription found"
+        
+        # Handle created status - check with Razorpay for current status
+        if payment['status'] == 'created':
+            try:
+                # Check current status with Razorpay
+                subscription = razorpay_client.subscription.fetch(payment['razorpay_subscription_id'])
+                razorpay_status = subscription.get('status')
+                
+                logger.info(f"Razorpay subscription status: {razorpay_status}")
+                
+                # Update local status if Razorpay shows different status
+                if razorpay_status in ['authenticated', 'active']:
+                    await conn.execute("""
+                        UPDATE payments 
+                        SET status = 'active', updated_at = NOW()
+                        WHERE razorpay_subscription_id = $1
+                    """, payment['razorpay_subscription_id'])
+                    # Update payment dict for further checks
+                    payment = dict(payment)
+                    payment['status'] = 'active'
+                    logger.info(f"Updated local payment status to active for subscription {payment['razorpay_subscription_id']}")
+                    
+                elif razorpay_status == 'pending':
+                    return False, "Payment is pending - please complete the payment"
+                    
+                elif razorpay_status == 'halted':
+                    return False, "Subscription has been halted due to payment issues"
+                    
+                else:
+                    return False, f"Subscription status: {razorpay_status}"
+                    
+            except Exception as e:
+                logger.error(f"Error checking Razorpay status: {str(e)}")
+                return False, "Unable to verify subscription status"
+        
+        # Check if subscription has expired
+        if payment['end_at'] and payment['end_at'] < datetime.utcnow():
+            return False, "Subscription has expired"
+        
+        # Check session limits
         if payment['session_used'] >= payment['session_limit']:
-            return False
-        return True
+            return False, "Session limit exceeded for current billing cycle"
+        
+        # Handle past_due status (grace period)
+        if payment['status'] == 'past_due':
+            # Allow limited usage during grace period (e.g., 3 days)
+            grace_period = timedelta(days=3)
+            if payment['next_billing_at'] and (datetime.utcnow() - payment['next_billing_at']) > grace_period:
+                return False, "Payment overdue beyond grace period"
+        
+        return True, "Active subscription"
+        
     except Exception as e:
         logger.error(f"Error checking payment status: {str(e)}")
-        return False
+        return False, "Error checking subscription status"
 
 # --- ROUTES ---
 
@@ -386,19 +446,28 @@ async def start_session(
     conn = Depends(get_db)
 ):
     try:
-        # Payment check integration
-        if not await check_payment_status(user_id, conn):
-            raise HTTPException(
-                status_code=403, 
-                detail="No active payment plan or session limit exceeded"
-            )
+        # Enhanced payment check
+        can_start, message = await check_payment_status(user_id, conn)
+        if not can_start:
+            raise HTTPException(status_code=403, detail=message)
+        
         room_id, room_name = await ensure_user_exists(conn, user_id)
         session_id = await create_session(conn, user_id, room_id)
-        await conn.execute("""
+        
+        # Increment usage atomically
+        updated_usage = await conn.fetchval("""
             UPDATE payments 
             SET session_used = session_used + 1, updated_at = NOW()
-            WHERE user_id = $1 AND status = 'active'
+            WHERE user_id = $1 AND status IN ('active', 'past_due')
+            RETURNING session_used
         """, user_id)
+        
+        if updated_usage is None:
+            # Rollback session creation
+            await conn.execute("DELETE FROM sessions WHERE id = $1", session_id)
+            raise HTTPException(status_code=403, detail="Payment plan not found")
+        
+        # Generate LiveKit token
         token = api.AccessToken(
             LIVEKIT_API_KEY,
             LIVEKIT_API_SECRET
@@ -409,6 +478,7 @@ async def start_session(
              room=room_name,
              room_create=True,
          ))
+        
         return SessionResponse(
             session_id=session_id,
             room_name=room_name,
@@ -416,6 +486,7 @@ async def start_session(
             token=token.to_jwt(),
             livekit_url=LIVEKIT_URL
         )
+        
     except HTTPException:
         raise
     except Exception as e:
@@ -688,7 +759,7 @@ async def create_subscription(
             "customer_notify": 1,
 
 
-            "start_at": int((datetime.now(timezone.utc) + timedelta(minutes=10)).timestamp()),
+            "start_at": int((datetime.now(timezone.utc) + timedelta(minutes=2)).timestamp()),
 
             "notes": {
                 "user_id": user_id,
@@ -746,12 +817,39 @@ async def get_current_payment(
             SELECT p.*, pl.name as plan_name
             FROM payments p
             LEFT JOIN plans pl ON p.plan_id = pl.id
-            WHERE p.user_id = $1 AND p.status = 'active'
+            WHERE p.user_id = $1 AND p.status IN ('active', 'past_due', 'created', 'authenticated')
             ORDER BY p.created_at DESC
             LIMIT 1
         """, user_id)
+        
         if not payment:
             raise HTTPException(status_code=404, detail="No active payment found")
+        
+        # If status is created, check with Razorpay for updates
+        if payment['status'] == 'created':
+            try:
+                subscription = razorpay_client.subscription.fetch(payment['razorpay_subscription_id'])
+                razorpay_status = subscription.get('status')
+                
+                if razorpay_status in ['authenticated', 'active']:
+                    # Update local status
+                    await conn.execute("""
+                        UPDATE payments 
+                        SET status = 'active', updated_at = NOW()
+                        WHERE id = $1
+                    """, payment['id'])
+                    
+                    # Refresh payment data
+                    payment = await conn.fetchrow("""
+                        SELECT p.*, pl.name as plan_name
+                        FROM payments p
+                        LEFT JOIN plans pl ON p.plan_id = pl.id
+                        WHERE p.id = $1
+                    """, payment['id'])
+                    
+            except Exception as e:
+                logger.error(f"Error syncing payment status: {str(e)}")
+        
         return PaymentResponse(
             id=str(payment['id']),
             user_id=str(payment['user_id']),
@@ -772,7 +870,6 @@ async def get_current_payment(
     except Exception as e:
         logger.error(f"Error fetching current payment: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to fetch payment details")
-
 @app.get("/api/payments/history")
 async def get_payment_history(
     user_id: str = Depends(get_current_user),
@@ -897,65 +994,238 @@ async def get_usage_stats(
         raise HTTPException(status_code=500, detail="Failed to fetch usage statistics")
 
 @app.post("/api/payments/webhook")
-async def razorpay_webhook(
-    request: Request,
-    conn = Depends(get_db)
-):
+async def razorpay_webhook(request: Request, conn = Depends(get_db)):
     try:
         body = await request.body()
         signature = request.headers.get('X-Razorpay-Signature')
-        if not signature:
-            raise HTTPException(status_code=400, detail="Missing signature")
-        if not verify_razorpay_signature(body, signature, RAZORPAY_KEY_SECRET):
+        
+        # Only verify with webhook secret, not API secret
+        if not signature or not verify_razorpay_signature(body, signature, RAZORPAY_WEBHOOK_SECRET):
+            logger.error("Invalid webhook signature")
             raise HTTPException(status_code=400, detail="Invalid signature")
+        
         payload = await request.json()
         event = payload.get('event')
-        subscription_data = payload.get('payload', {}).get('subscription', {})
+        
+        # Fix: Handle both possible payload structures
+        entity_data = payload.get('payload', {}).get('entity', {})
+        
+        # Fallback to old structure if entity is empty
+        if not entity_data:
+            entity_data = payload.get('payload', {}).get('subscription', {})
+        
+        # For payment events, check payment entity
+        payment_data = payload.get('payload', {}).get('payment', {})
+        
         logger.info(f"Received webhook event: {event}")
-        if not subscription_data:
-            return {"status": "ignored", "reason": "no subscription data"}
-        subscription_id = subscription_data.get('id')
+        logger.info(f"Entity data: {entity_data}")
+        
+        subscription_id = entity_data.get('id')
         if not subscription_id:
+            logger.warning("No subscription ID in webhook payload")
+            logger.warning(f"Full payload structure: {payload}")
             return {"status": "ignored", "reason": "no subscription id"}
+        
+        # Handle different webhook events
         if event == 'subscription.activated':
-            await conn.execute("""
-                UPDATE payments 
-                SET status = 'active', updated_at = NOW()
-                WHERE razorpay_subscription_id = $1
-            """, subscription_id)
-        elif event == 'subscription.cancelled':
-            await conn.execute("""
-                UPDATE payments 
-                SET status = 'cancelled', end_at = NOW(), updated_at = NOW()
-                WHERE razorpay_subscription_id = $1
-            """, subscription_id)
+            await handle_subscription_activated(conn, subscription_id, entity_data)
+            
         elif event == 'subscription.charged':
-            next_billing = subscription_data.get('next_billing_at')
-            if next_billing:
-                next_billing_dt = datetime.fromtimestamp(next_billing)
-                await conn.execute("""
-                    UPDATE payments 
-                    SET session_used = 0, next_billing_at = $1, updated_at = NOW()
-                    WHERE razorpay_subscription_id = $2
-                """, next_billing_dt, subscription_id)
+            await handle_subscription_charged(conn, subscription_id, entity_data, payment_data)
+            
+        elif event == 'subscription.authenticated':
+            # This event fires when subscription is created and authenticated
+            await handle_subscription_authenticated(conn, subscription_id, entity_data)
+            
+        elif event == 'subscription.charge_failed':
+            await handle_charge_failed(conn, subscription_id, entity_data)
+            
+        elif event == 'subscription.cancelled':
+            await handle_subscription_cancelled(conn, subscription_id)
+            
+        elif event == 'subscription.completed':
+            await handle_subscription_completed(conn, subscription_id)
+            
         elif event == 'subscription.paused':
-            await conn.execute("""
-                UPDATE payments 
-                SET status = 'paused', updated_at = NOW()
-                WHERE razorpay_subscription_id = $1
-            """, subscription_id)
+            await handle_subscription_paused(conn, subscription_id)
+            
         elif event == 'subscription.resumed':
-            await conn.execute("""
-                UPDATE payments 
-                SET status = 'active', updated_at = NOW()
-                WHERE razorpay_subscription_id = $1
-            """, subscription_id)
+            await handle_subscription_resumed(conn, subscription_id)
+        
+        else:
+            logger.info(f"Unhandled webhook event: {event}")
+        
         return {"status": "processed", "event": event}
+        
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error processing webhook: {str(e)}")
+        logger.error(f"Request body: {body}")
         raise HTTPException(status_code=500, detail="Webhook processing failed")
+
+
+async def handle_subscription_authenticated(conn, subscription_id: str, subscription_data: dict):
+    """Handle subscription authentication (moves from created to active)"""
+    try:
+        # Log the subscription data for debugging
+        logger.info(f"Processing authentication for subscription {subscription_id}")
+        logger.info(f"Subscription status in webhook: {subscription_data.get('status')}")
+        
+        # Update status to active when subscription is authenticated
+        result = await conn.execute("""
+            UPDATE payments 
+            SET status = 'active', updated_at = NOW()
+            WHERE razorpay_subscription_id = $1 AND status IN ('created', 'authenticated')
+        """, subscription_id)
+        
+        # Check how many rows were updated
+        rows_updated = int(result.split()[-1]) if result.startswith('UPDATE') else 0
+        
+        if rows_updated > 0:
+            logger.info(f"Subscription {subscription_id} activated via authentication event - {rows_updated} rows updated")
+        else:
+            logger.warning(f"No payment record found for subscription {subscription_id} in created/authenticated status")
+            
+            # Debug: Check if the subscription exists with a different status
+            existing_payment = await conn.fetchrow("""
+                SELECT id, user_id, status, razorpay_subscription_id 
+                FROM payments 
+                WHERE razorpay_subscription_id = $1
+            """, subscription_id)
+            
+            if existing_payment:
+                logger.info(f"Found existing payment record with status: {existing_payment['status']}")
+            else:
+                logger.error(f"No payment record found at all for subscription {subscription_id}")
+            
+    except Exception as e:
+        logger.error(f"Error handling subscription authentication: {str(e)}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
+
+
+
+async def handle_subscription_activated(conn, subscription_id: str, subscription_data: dict):
+    """Handle subscription activation"""
+    try:
+        start_time = subscription_data.get('start_at')
+        if start_time:
+            start_dt = datetime.fromtimestamp(start_time)
+        else:
+            start_dt = datetime.utcnow()
+        
+        result = await conn.execute("""
+            UPDATE payments 
+            SET status = 'active', start_at = $1, updated_at = NOW()
+            WHERE razorpay_subscription_id = $2
+        """, start_dt, subscription_id)
+        
+        rows_updated = int(result.split()[-1]) if result.startswith('UPDATE') else 0
+        logger.info(f"Subscription {subscription_id} activated, rows affected: {rows_updated}")
+        
+    except Exception as e:
+        logger.error(f"Error activating subscription {subscription_id}: {str(e)}")
+
+async def handle_subscription_charged(conn, subscription_id: str, subscription_data: dict, payment_data: dict):
+    """Handle successful subscription charge"""
+    try:
+        next_billing = subscription_data.get('next_billing_at')
+        amount = payment_data.get('amount', 0)
+        
+        # Get current payment record to check if we should reset sessions
+        current_payment = await conn.fetchrow("""
+            SELECT session_used, session_limit, last_reset_at, status
+            FROM payments 
+            WHERE razorpay_subscription_id = $1
+        """, subscription_id)
+        
+        if not current_payment:
+            logger.error(f"No payment record found for subscription {subscription_id}")
+            return
+        
+        # Determine if this is a new billing cycle
+        should_reset_sessions = True
+        if current_payment['last_reset_at']:
+            # Check if we've already reset sessions for this billing cycle
+            last_reset = current_payment['last_reset_at']
+            if (datetime.utcnow() - last_reset).days < 25:  # Less than 25 days since last reset
+                should_reset_sessions = False
+        
+        update_query = """
+            UPDATE payments 
+            SET status = 'active', 
+                next_billing_at = $1,
+                last_payment_amount = $2,
+                last_payment_at = NOW(),
+                updated_at = NOW()
+        """
+        params = [datetime.fromtimestamp(next_billing) if next_billing else None, amount]
+        
+        if should_reset_sessions:
+            update_query += ", session_used = 0, last_reset_at = NOW()"
+        
+        update_query += " WHERE razorpay_subscription_id = $3"
+        params.append(subscription_id)
+        
+        result = await conn.execute(update_query, *params)
+        
+        rows_updated = int(result.split()[-1]) if result.startswith('UPDATE') else 0
+        logger.info(f"Subscription {subscription_id} charged successfully. Sessions reset: {should_reset_sessions}, rows affected: {rows_updated}")
+        
+    except Exception as e:
+        logger.error(f"Error handling subscription charge for {subscription_id}: {str(e)}")
+
+async def handle_charge_failed(conn, subscription_id: str, subscription_data: dict):
+    """Handle failed subscription charge"""
+    await conn.execute("""
+        UPDATE payments 
+        SET status = 'past_due', updated_at = NOW()
+        WHERE razorpay_subscription_id = $1
+    """, subscription_id)
+    
+    # Optional: Send notification to user about failed payment
+    logger.warning(f"Subscription {subscription_id} charge failed - marked as past_due")
+
+async def handle_subscription_cancelled(conn, subscription_id: str):
+    """Handle subscription cancellation"""
+    await conn.execute("""
+        UPDATE payments 
+        SET status = 'cancelled', end_at = NOW(), updated_at = NOW()
+        WHERE razorpay_subscription_id = $1
+    """, subscription_id)
+    
+    logger.info(f"Subscription {subscription_id} cancelled")
+
+async def handle_subscription_completed(conn, subscription_id: str):
+    """Handle subscription completion (natural end)"""
+    await conn.execute("""
+        UPDATE payments 
+        SET status = 'completed', end_at = NOW(), updated_at = NOW()
+        WHERE razorpay_subscription_id = $1
+    """, subscription_id)
+    
+    logger.info(f"Subscription {subscription_id} completed")
+
+async def handle_subscription_paused(conn, subscription_id: str):
+    """Handle subscription pause"""
+    await conn.execute("""
+        UPDATE payments 
+        SET status = 'paused', updated_at = NOW()
+        WHERE razorpay_subscription_id = $1
+    """, subscription_id)
+    
+    logger.info(f"Subscription {subscription_id} paused")
+
+async def handle_subscription_resumed(conn, subscription_id: str):
+    """Handle subscription resume"""
+    await conn.execute("""
+        UPDATE payments 
+        SET status = 'active', updated_at = NOW()
+        WHERE razorpay_subscription_id = $1
+    """, subscription_id)
+    
+    logger.info(f"Subscription {subscription_id} resumed")
 
 # --- Startup and shutdown events ---
 @asynccontextmanager

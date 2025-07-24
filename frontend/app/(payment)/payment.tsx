@@ -31,8 +31,16 @@ interface PaymentStatus {
   session_limit: number;
   session_used: number;
   remaining: number;
-  status: string;
+  status:
+    | "active"
+    | "past_due"
+    | "cancelled"
+    | "paused"
+    | "completed"
+    | "no_plan";
   next_billing_at: string | null;
+  grace_period_ends_at?: string | null;
+  last_payment_at?: string | null;
 }
 
 interface UserProfile {
@@ -43,6 +51,7 @@ interface UserProfile {
   created_at: string;
   updated_at: string;
 }
+
 
 const RazorpayPaymentScreen = () => {
   const [loading, setLoading] = useState(false);
@@ -55,6 +64,123 @@ const RazorpayPaymentScreen = () => {
   );
   const [user, setUser] = useState<User | null>(null);
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
+
+
+  const renderPaymentStatus = () => {
+    if (!paymentStatus || paymentStatus.status === "no_plan") {
+      return null;
+    }
+
+    const getStatusColor = (status: string) => {
+      switch (status) {
+        case "active":
+          return "#4CAF50";
+        case "past_due":
+          return "#FF9800";
+        case "cancelled":
+          return "#F44336";
+        case "paused":
+          return "#9E9E9E";
+        case "completed":
+          return "#607D8B";
+        default:
+          return "#666";
+      }
+    };
+
+    const getStatusMessage = (status: string) => {
+      switch (status) {
+        case "active":
+          return "Your subscription is active";
+        case "past_due":
+          return "Payment overdue - please update payment method";
+        case "cancelled":
+          return "Subscription cancelled";
+        case "paused":
+          return "Subscription paused";
+        case "completed":
+          return "Subscription completed";
+        default:
+          return "Unknown status";
+      }
+    };
+
+    return (
+      <View style={styles.statusCard}>
+        <Text style={styles.statusTitle}>Current Plan Status</Text>
+
+        <View
+          style={[
+            styles.statusBadge,
+            { backgroundColor: getStatusColor(paymentStatus.status) },
+          ]}
+        >
+          <Text style={styles.statusBadgeText}>
+            {paymentStatus.status.toUpperCase()}
+          </Text>
+        </View>
+
+        <Text style={styles.statusMessage}>
+          {getStatusMessage(paymentStatus.status)}
+        </Text>
+
+        <View style={styles.usageContainer}>
+          <Text style={styles.usageText}>
+            Sessions Used: {paymentStatus.session_used} /{" "}
+            {paymentStatus.session_limit}
+          </Text>
+          <View style={styles.progressBar}>
+            <View
+              style={[
+                styles.progressFill,
+                {
+                  width: `${
+                    (paymentStatus.session_used / paymentStatus.session_limit) *
+                    100
+                  }%`,
+                  backgroundColor:
+                    paymentStatus.session_used >= paymentStatus.session_limit
+                      ? "#F44336"
+                      : "#4CAF50",
+                },
+              ]}
+            />
+          </View>
+          <Text style={styles.remainingText}>
+            {paymentStatus.remaining} sessions remaining
+          </Text>
+        </View>
+
+        {paymentStatus.next_billing_at && (
+          <Text style={styles.billingText}>
+            Next Billing:{" "}
+            {new Date(paymentStatus.next_billing_at).toLocaleDateString()}
+          </Text>
+        )}
+
+        {paymentStatus.status === "past_due" &&
+          paymentStatus.grace_period_ends_at && (
+            <Text style={styles.warningText}>
+              Grace period ends:{" "}
+              {new Date(
+                paymentStatus.grace_period_ends_at
+              ).toLocaleDateString()}
+            </Text>
+          )}
+
+        {paymentStatus.status === "active" && (
+          <TouchableOpacity
+            style={styles.cancelButton}
+            onPress={() => confirmCancellation()}
+            disabled={loading}
+          >
+            <Text style={styles.cancelButtonText}>Cancel Subscription</Text>
+          </TouchableOpacity>
+        )}
+      </View>
+    );
+  };
+ 
 
   useEffect(() => {
     loadUserData();
@@ -172,169 +298,243 @@ const RazorpayPaymentScreen = () => {
     setRefreshing(false);
   };
 
-  // Create subscription
-  const createSubscription = async (
-    planId: string,
-    email: string,
-    name?: string
-  ) => {
-    try {
-      // Get fresh session token
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
+const createSubscription = async (
+  planId: string,
+  email: string,
+  name?: string
+) => {
+  try {
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
 
-      if (!session?.access_token) {
-        throw new Error("No valid session");
-      }
-
-      const response = await fetch(
-        `${BACKEND_URL}/api/payments/create-subscription`,
-        {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${session.access_token}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            plan_id: planId,
-            customer_email: email,
-            customer_name: name,
-          }),
-        }
-      );
-
-      if (!response.ok) {
-        throw new Error("Failed to create subscription");
-      }
-
-      return await response.json();
-    } catch (error) {
-      console.error("Error creating subscription:", error);
-      throw error;
+    if (!session?.access_token) {
+      throw new Error("Authentication required");
     }
-  };
 
+    const response = await fetch(
+      `${BACKEND_URL}/api/payments/create-subscription`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${session.access_token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          plan_id: planId,
+          customer_email: email,
+          customer_name: name,
+        }),
+      }
+    );
+
+    const responseData = await response.json();
+
+    if (!response.ok) {
+      throw new Error(responseData.detail || "Failed to create subscription");
+    }
+
+    return responseData;
+  } catch (error) {
+    console.error("Error creating subscription:", error);
+    throw error;
+  }
+};
   // Handle payment process
-  const handlePayment = async () => {
-    if (!selectedPlan) {
-      Alert.alert("Error", "Please select a plan");
-      return;
-    }
+ const handlePayment = async () => {
+   if (!selectedPlan) {
+     Alert.alert("Error", "Please select a plan");
+     return;
+   }
 
-    if (!user) {
-      Alert.alert("Error", "Authentication required");
-      return;
-    }
+   if (!user) {
+     Alert.alert("Error", "Authentication required");
+     return;
+   }
 
-    // Use userProfile for name, fallback to user metadata, then user email
-    const userName =
-      userProfile?.name ||
-      user?.user_metadata?.full_name ||
-      user?.email?.split("@")[0] ||
-      "User";
+   const userName = getUserDisplayName();
+   const userEmail = userProfile?.email || user?.email;
 
-    const userEmail = userProfile?.email || user?.email;
+   if (!userEmail) {
+     Alert.alert("Error", "User email is required");
+     return;
+   }
 
-    if (!userEmail) {
-      Alert.alert("Error", "User email is required");
-      return;
-    }
+   setLoading(true);
 
-    setLoading(true);
+   try {
+     // Create subscription on backend
+     const subscriptionData = await createSubscription(
+       selectedPlan.id,
+       userEmail,
+       userName
+     );
 
-    try {
-      // Create subscription on backend
-      const subscriptionData = await createSubscription(
-        selectedPlan.id,
-        userEmail,
-        userName
-      );
-
-      // Open Razorpay checkout
-   const options = {
-     description: `Subscription: ${selectedPlan.name}`,
-     image: "https://i.imgur.com/3g7nmJC.png",
-     currency: "INR",
-
-     amount: selectedPlan.monthly_price * 100,
-     name: "Your App Name",
-     key: RAZOR_KEY, 
-     subscription_id: subscriptionData.subscription_id,
-
-     prefill: {
-       email: userEmail,
-       contact: "=919548999129",
-       name: userName,
-     },
-     theme: {
-       color: "#3399cc",
-     },
-
-     config: {
-       display: {
-         blocks: {
-           other: {
-             name: "Choose a Payment Method",
-             instruments: [
-               { method: "upi" },
-               { method: "card" },
-               { method: "wallet" },
-               { method: "netbanking" },
-             ],
+     // Enhanced Razorpay options
+     const options = {
+       description: `${selectedPlan.name} - Monthly Subscription`,
+       image: "https://i.imgur.com/3g7nmJC.png",
+       currency: "INR",
+       amount: selectedPlan.monthly_price * 100,
+       name: "Your App Name",
+       key: RAZOR_KEY,
+       subscription_id: subscriptionData.subscription_id,
+       prefill: {
+         email: userEmail,
+         contact: "9548999129", // Remove the = sign
+         name: userName,
+       },
+       theme: {
+         color: "#3399cc",
+       },
+       config: {
+         display: {
+           blocks: {
+             other: {
+               name: "Choose a Payment Method",
+               instruments: [
+                 { method: "upi" },
+                 { method: "card" },
+                 { method: "wallet" },
+                 { method: "netbanking" },
+               ],
+             },
+           },
+           sequence: ["block.other"],
+           preferences: {
+             show_default_blocks: true,
            },
          },
-         sequence: ["block.other"],
-         preferences: {
-           show_default_blocks: true,
+       },
+       modal: {
+         ondismiss: () => {
+           console.log("Payment modal dismissed");
+           setLoading(false);
          },
        },
-     },
-     modal: {
-       ondismiss: () => {
-         console.log("Payment modal dismissed");
-         Alert.alert("Payment Cancelled", "You have cancelled the payment.");
+       // Add retry options
+       retry: {
+         enabled: true,
+         max_count: 3,
        },
-     },
-   };
+       // Add timeout
+       timeout: 300, // 5 minutes
+     };
 
-      RazorpayCheckout.open(options)
-        .then((data) => {
-          setLoading(false);
-          Alert.alert(
-            "Payment Successful",
-            `Subscription activated!\nPayment ID: ${data.razorpay_payment_id}`,
-            [
-              {
-                text: "OK",
-                onPress: async () => {
-                  // Refresh payment status
-                  const {
-                    data: { session },
-                  } = await supabase.auth.getSession();
-                  if (session?.access_token) {
-                    await fetchPaymentStatus(session.access_token);
-                  }
-                },
-              },
-            ]
-          );
-        })
-        .catch((error) => {
-          setLoading(false);
-          console.log("Payment Error:", error);
+     RazorpayCheckout.open(options)
+       .then(async (data) => {
+         setLoading(false);
 
-          if (error.code === RazorpayCheckout.PAYMENT_CANCELLED) {
-            Alert.alert("Payment Cancelled", "Payment was cancelled by user");
-          } else {
-            Alert.alert("Payment Failed", `Error: ${error.description}`);
-          }
-        });
-    } catch (error) {
-      setLoading(false);
-      Alert.alert("Error", "Could not initiate payment. Please try again.");
-    }
-  };
+         // Verify payment on backend
+         try {
+           const {
+             data: { session },
+           } = await supabase.auth.getSession();
+
+           if (session?.access_token) {
+             // Refresh payment status to get updated data
+             await fetchPaymentStatus(session.access_token);
+           }
+
+           Alert.alert(
+             "Payment Successful! 🎉",
+             `Your ${selectedPlan.name} subscription is now active!\n\nPayment ID: ${data.razorpay_payment_id}`,
+             [
+               {
+                 text: "Great!",
+                 onPress: () => {
+                   // Optionally navigate to home or sessions screen
+                   console.log("Payment successful, subscription activated");
+                 },
+               },
+             ]
+           );
+         } catch (error) {
+           console.error("Error refreshing payment status:", error);
+           // Still show success message even if refresh fails
+           Alert.alert(
+             "Payment Successful",
+             "Your subscription has been activated!"
+           );
+         }
+       })
+       .catch((error) => {
+         setLoading(false);
+         console.log("Payment Error:", error);
+
+         if (error.code === RazorpayCheckout.PAYMENT_CANCELLED) {
+           Alert.alert(
+             "Payment Cancelled",
+             "You cancelled the payment process."
+           );
+         } else if (error.code === RazorpayCheckout.PAYMENT_TIMEOUT) {
+           Alert.alert(
+             "Payment Timeout",
+             "Payment process timed out. Please try again."
+           );
+         } else {
+           Alert.alert(
+             "Payment Failed",
+             `There was an issue processing your payment: ${
+               error.description || error.message
+             }`
+           );
+         }
+       });
+   } catch (error) {
+     setLoading(false);
+     console.error("Subscription creation error:", error);
+
+     Alert.alert(
+       "Subscription Error",
+       `Could not create subscription: ${error.message}. Please try again.`
+     );
+   }
+ };
+
+ const confirmCancellation = () => {
+   Alert.alert(
+     "Cancel Subscription",
+     "Are you sure you want to cancel your subscription? You'll lose access to premium features at the end of your current billing cycle.",
+     [
+       {
+         text: "Keep Subscription",
+         style: "cancel",
+       },
+       {
+         text: "Yes, Cancel",
+         style: "destructive",
+         onPress: cancelSubscription,
+       },
+     ]
+   );
+ };
+ const fetchWithRetry = async (url: string, options: any, maxRetries = 3) => {
+   for (let i = 0; i < maxRetries; i++) {
+     try {
+       const response = await fetch(url, options);
+
+       if (response.status === 401) {
+         // Token expired, redirect to login
+         router.navigate("/(auth)/login");
+         throw new Error("Authentication expired");
+       }
+
+       return response;
+     } catch (error) {
+       if (i === maxRetries - 1) {
+         throw error;
+       }
+
+       // Wait before retry (exponential backoff)
+       await new Promise((resolve) =>
+         setTimeout(resolve, Math.pow(2, i) * 1000)
+       );
+     }
+   }
+ };
+
+
 
   // Cancel subscription
   const cancelSubscription = async () => {
@@ -718,5 +918,55 @@ const styles = StyleSheet.create({
     marginHorizontal: 20,
     fontStyle: "italic",
     paddingBottom: 20,
+  },
+  statusBadge: {
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+    borderRadius: 12,
+    alignSelf: "flex-start",
+    marginBottom: 8,
+  },
+  statusBadgeText: {
+    color: "white",
+    fontSize: 12,
+    fontWeight: "bold",
+  },
+  statusMessage: {
+    fontSize: 14,
+    color: "#666",
+    marginBottom: 16,
+  },
+  usageContainer: {
+    marginBottom: 16,
+  },
+  usageText: {
+    fontSize: 14,
+    color: "#333",
+    marginBottom: 8,
+  },
+  progressBar: {
+    height: 8,
+    backgroundColor: "#E0E0E0",
+    borderRadius: 4,
+    marginBottom: 4,
+  },
+  progressFill: {
+    height: "100%",
+    borderRadius: 4,
+  },
+  remainingText: {
+    fontSize: 12,
+    color: "#666",
+  },
+  billingText: {
+    fontSize: 12,
+    color: "#666",
+    marginBottom: 8,
+  },
+  warningText: {
+    fontSize: 12,
+    color: "#FF9800",
+    fontWeight: "bold",
+    marginBottom: 8,
   },
 });
