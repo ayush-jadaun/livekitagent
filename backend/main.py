@@ -1007,38 +1007,67 @@ async def razorpay_webhook(request: Request, conn = Depends(get_db)):
         payload = await request.json()
         event = payload.get('event')
         
-        # Fix: Handle both possible payload structures
-        entity_data = payload.get('payload', {}).get('entity', {})
-        
-        # Fallback to old structure if entity is empty
-        if not entity_data:
-            entity_data = payload.get('payload', {}).get('subscription', {})
-        
-        # For payment events, check payment entity
-        payment_data = payload.get('payload', {}).get('payment', {})
-        
         logger.info(f"Received webhook event: {event}")
-        logger.info(f"Entity data: {entity_data}")
+        logger.info(f"Full payload: {payload}")
         
-        subscription_id = entity_data.get('id')
+        # Extract entity data based on the correct Razorpay webhook structure
+        subscription_data = None
+        payment_data = None
+        subscription_id = None
+        
+        # Handle the nested structure correctly
+        payload_data = payload.get('payload', {})
+        
+        # For subscription events
+        if 'subscription' in payload_data:
+            subscription_payload = payload_data['subscription']
+            # Handle both possible structures
+            if 'entity' in subscription_payload:
+                subscription_data = subscription_payload['entity']
+            else:
+                subscription_data = subscription_payload
+            subscription_id = subscription_data.get('id')
+        
+        # For payment events
+        if 'payment' in payload_data:
+            payment_payload = payload_data['payment']
+            if 'entity' in payment_payload:
+                payment_data = payment_payload['entity']
+            else:
+                payment_data = payment_payload
+            
+            # For payment events, we might need to get subscription ID from payment data
+            if not subscription_id:
+                subscription_id = payment_data.get('subscription_id')
+        
+        # Alternative extraction method for direct entity structure
         if not subscription_id:
-            logger.warning("No subscription ID in webhook payload")
-            logger.warning(f"Full payload structure: {payload}")
+            entity_data = payload_data.get('entity', {})
+            if entity_data.get('entity') == 'subscription':
+                subscription_data = entity_data
+                subscription_id = entity_data.get('id')
+        
+        logger.info(f"Extracted subscription ID: {subscription_id}")
+        logger.info(f"Subscription data: {subscription_data}")
+        
+        if not subscription_id:
+            logger.warning("No subscription ID found in webhook payload")
+            logger.warning(f"Payload structure: {payload}")
             return {"status": "ignored", "reason": "no subscription id"}
         
         # Handle different webhook events
         if event == 'subscription.activated':
-            await handle_subscription_activated(conn, subscription_id, entity_data)
+            await handle_subscription_activated(conn, subscription_id, subscription_data)
             
         elif event == 'subscription.charged':
-            await handle_subscription_charged(conn, subscription_id, entity_data, payment_data)
+            await handle_subscription_charged(conn, subscription_id, subscription_data, payment_data)
             
         elif event == 'subscription.authenticated':
             # This event fires when subscription is created and authenticated
-            await handle_subscription_authenticated(conn, subscription_id, entity_data)
+            await handle_subscription_authenticated(conn, subscription_id, subscription_data)
             
         elif event == 'subscription.charge_failed':
-            await handle_charge_failed(conn, subscription_id, entity_data)
+            await handle_charge_failed(conn, subscription_id, subscription_data)
             
         elif event == 'subscription.cancelled':
             await handle_subscription_cancelled(conn, subscription_id)
@@ -1062,7 +1091,10 @@ async def razorpay_webhook(request: Request, conn = Depends(get_db)):
     except Exception as e:
         logger.error(f"Error processing webhook: {str(e)}")
         logger.error(f"Request body: {body}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail="Webhook processing failed")
+
 
 
 async def handle_subscription_authenticated(conn, subscription_id: str, subscription_data: dict):
@@ -1070,7 +1102,7 @@ async def handle_subscription_authenticated(conn, subscription_id: str, subscrip
     try:
         # Log the subscription data for debugging
         logger.info(f"Processing authentication for subscription {subscription_id}")
-        logger.info(f"Subscription status in webhook: {subscription_data.get('status')}")
+        logger.info(f"Subscription status in webhook: {subscription_data.get('status') if subscription_data else 'No data'}")
         
         # Update status to active when subscription is authenticated
         result = await conn.execute("""
@@ -1096,6 +1128,14 @@ async def handle_subscription_authenticated(conn, subscription_id: str, subscrip
             
             if existing_payment:
                 logger.info(f"Found existing payment record with status: {existing_payment['status']}")
+                # If it exists but with wrong status, let's update it anyway
+                if existing_payment['status'] in ['created']:
+                    await conn.execute("""
+                        UPDATE payments 
+                        SET status = 'active', updated_at = NOW()
+                        WHERE razorpay_subscription_id = $1
+                    """, subscription_id)
+                    logger.info(f"Force updated subscription {subscription_id} to active status")
             else:
                 logger.error(f"No payment record found at all for subscription {subscription_id}")
             
@@ -1106,9 +1146,14 @@ async def handle_subscription_authenticated(conn, subscription_id: str, subscrip
 
 
 
+
 async def handle_subscription_activated(conn, subscription_id: str, subscription_data: dict):
     """Handle subscription activation"""
     try:
+        if not subscription_data:
+            logger.warning(f"No subscription data provided for activation of {subscription_id}")
+            return
+            
         start_time = subscription_data.get('start_at')
         if start_time:
             start_dt = datetime.fromtimestamp(start_time)
@@ -1127,11 +1172,18 @@ async def handle_subscription_activated(conn, subscription_id: str, subscription
     except Exception as e:
         logger.error(f"Error activating subscription {subscription_id}: {str(e)}")
 
+
+
+
 async def handle_subscription_charged(conn, subscription_id: str, subscription_data: dict, payment_data: dict):
     """Handle successful subscription charge"""
     try:
+        if not subscription_data:
+            logger.warning(f"No subscription data provided for charge of {subscription_id}")
+            return
+            
         next_billing = subscription_data.get('next_billing_at')
-        amount = payment_data.get('amount', 0)
+        amount = payment_data.get('amount', 0) if payment_data else 0
         
         # Get current payment record to check if we should reset sessions
         current_payment = await conn.fetchrow("""
@@ -1176,27 +1228,72 @@ async def handle_subscription_charged(conn, subscription_id: str, subscription_d
     except Exception as e:
         logger.error(f"Error handling subscription charge for {subscription_id}: {str(e)}")
 
+
 async def handle_charge_failed(conn, subscription_id: str, subscription_data: dict):
     """Handle failed subscription charge"""
-    await conn.execute("""
-        UPDATE payments 
-        SET status = 'past_due', updated_at = NOW()
-        WHERE razorpay_subscription_id = $1
-    """, subscription_id)
-    
-    # Optional: Send notification to user about failed payment
-    logger.warning(f"Subscription {subscription_id} charge failed - marked as past_due")
+    try:
+        await conn.execute("""
+            UPDATE payments 
+            SET status = 'past_due', updated_at = NOW()
+            WHERE razorpay_subscription_id = $1
+        """, subscription_id)
+        
+        # Optional: Send notification to user about failed payment
+        logger.warning(f"Subscription {subscription_id} charge failed - marked as past_due")
+    except Exception as e:
+        logger.error(f"Error handling charge failed for {subscription_id}: {str(e)}")
 
 async def handle_subscription_cancelled(conn, subscription_id: str):
     """Handle subscription cancellation"""
-    await conn.execute("""
-        UPDATE payments 
-        SET status = 'cancelled', end_at = NOW(), updated_at = NOW()
-        WHERE razorpay_subscription_id = $1
-    """, subscription_id)
-    
-    logger.info(f"Subscription {subscription_id} cancelled")
+    try:
+        await conn.execute("""
+            UPDATE payments 
+            SET status = 'cancelled', end_at = NOW(), updated_at = NOW()
+            WHERE razorpay_subscription_id = $1
+        """, subscription_id)
+        
+        logger.info(f"Subscription {subscription_id} cancelled")
+    except Exception as e:
+        logger.error(f"Error handling subscription cancellation for {subscription_id}: {str(e)}")
 
+async def handle_subscription_completed(conn, subscription_id: str):
+    """Handle subscription completion (natural end)"""
+    try:
+        await conn.execute("""
+            UPDATE payments 
+            SET status = 'completed', end_at = NOW(), updated_at = NOW()
+            WHERE razorpay_subscription_id = $1
+        """, subscription_id)
+        
+        logger.info(f"Subscription {subscription_id} completed")
+    except Exception as e:
+        logger.error(f"Error handling subscription completion for {subscription_id}: {str(e)}")
+
+async def handle_subscription_paused(conn, subscription_id: str):
+    """Handle subscription pause"""
+    try:
+        await conn.execute("""
+            UPDATE payments 
+            SET status = 'paused', updated_at = NOW()
+            WHERE razorpay_subscription_id = $1
+        """, subscription_id)
+        
+        logger.info(f"Subscription {subscription_id} paused")
+    except Exception as e:
+        logger.error(f"Error handling subscription pause for {subscription_id}: {str(e)}")
+
+async def handle_subscription_resumed(conn, subscription_id: str):
+    """Handle subscription resume"""
+    try:
+        await conn.execute("""
+            UPDATE payments 
+            SET status = 'active', updated_at = NOW()
+            WHERE razorpay_subscription_id = $1
+        """, subscription_id)
+        
+        logger.info(f"Subscription {subscription_id} resumed")
+    except Exception as e:
+        logger.error(f"Error handling subscription resume for {subscription_id}: {str(e)}")
 async def handle_subscription_completed(conn, subscription_id: str):
     """Handle subscription completion (natural end)"""
     await conn.execute("""
@@ -1207,25 +1304,6 @@ async def handle_subscription_completed(conn, subscription_id: str):
     
     logger.info(f"Subscription {subscription_id} completed")
 
-async def handle_subscription_paused(conn, subscription_id: str):
-    """Handle subscription pause"""
-    await conn.execute("""
-        UPDATE payments 
-        SET status = 'paused', updated_at = NOW()
-        WHERE razorpay_subscription_id = $1
-    """, subscription_id)
-    
-    logger.info(f"Subscription {subscription_id} paused")
-
-async def handle_subscription_resumed(conn, subscription_id: str):
-    """Handle subscription resume"""
-    await conn.execute("""
-        UPDATE payments 
-        SET status = 'active', updated_at = NOW()
-        WHERE razorpay_subscription_id = $1
-    """, subscription_id)
-    
-    logger.info(f"Subscription {subscription_id} resumed")
 
 # --- Startup and shutdown events ---
 @asynccontextmanager
