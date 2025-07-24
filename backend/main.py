@@ -817,38 +817,13 @@ async def get_current_payment(
             SELECT p.*, pl.name as plan_name
             FROM payments p
             LEFT JOIN plans pl ON p.plan_id = pl.id
-            WHERE p.user_id = $1 AND p.status IN ('active', 'past_due', 'created', 'authenticated')
+            WHERE p.user_id = $1 AND p.status = 'active'
             ORDER BY p.created_at DESC
             LIMIT 1
         """, user_id)
         
         if not payment:
             raise HTTPException(status_code=404, detail="No active payment found")
-        
-        # If status is created, check with Razorpay for updates
-        if payment['status'] == 'created':
-            try:
-                subscription = razorpay_client.subscription.fetch(payment['razorpay_subscription_id'])
-                razorpay_status = subscription.get('status')
-                
-                if razorpay_status in ['authenticated', 'active']:
-                    # Update local status
-                    await conn.execute("""
-                        UPDATE payments 
-                        SET status = 'active', updated_at = NOW()
-                        WHERE id = $1
-                    """, payment['id'])
-                    
-                    # Refresh payment data
-                    payment = await conn.fetchrow("""
-                        SELECT p.*, pl.name as plan_name
-                        FROM payments p
-                        LEFT JOIN plans pl ON p.plan_id = pl.id
-                        WHERE p.id = $1
-                    """, payment['id'])
-                    
-            except Exception as e:
-                logger.error(f"Error syncing payment status: {str(e)}")
         
         return PaymentResponse(
             id=str(payment['id']),
@@ -870,6 +845,9 @@ async def get_current_payment(
     except Exception as e:
         logger.error(f"Error fetching current payment: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to fetch payment details")
+   
+
+
 @app.get("/api/payments/history")
 async def get_payment_history(
     user_id: str = Depends(get_current_user),
@@ -1073,7 +1051,8 @@ async def razorpay_webhook(request: Request, conn = Depends(get_db)):
             await handle_subscription_cancelled(conn, subscription_id)
             
         elif event == 'subscription.completed':
-            await handle_subscription_completed(conn, subscription_id)
+            # Map completed to cancelled since you don't have 'completed' in enum
+            await handle_subscription_cancelled(conn, subscription_id)
             
         elif event == 'subscription.paused':
             await handle_subscription_paused(conn, subscription_id)
@@ -1096,7 +1075,6 @@ async def razorpay_webhook(request: Request, conn = Depends(get_db)):
         raise HTTPException(status_code=500, detail="Webhook processing failed")
 
 
-
 async def handle_subscription_authenticated(conn, subscription_id: str, subscription_data: dict):
     """Handle subscription authentication (moves from created to active)"""
     try:
@@ -1105,10 +1083,11 @@ async def handle_subscription_authenticated(conn, subscription_id: str, subscrip
         logger.info(f"Subscription status in webhook: {subscription_data.get('status') if subscription_data else 'No data'}")
         
         # Update status to active when subscription is authenticated
+        # Note: Using only valid enum values from your database
         result = await conn.execute("""
             UPDATE payments 
             SET status = 'active', updated_at = NOW()
-            WHERE razorpay_subscription_id = $1 AND status IN ('created', 'authenticated')
+            WHERE razorpay_subscription_id = $1
         """, subscription_id)
         
         # Check how many rows were updated
@@ -1145,8 +1124,6 @@ async def handle_subscription_authenticated(conn, subscription_id: str, subscrip
         logger.error(f"Traceback: {traceback.format_exc()}")
 
 
-
-
 async def handle_subscription_activated(conn, subscription_id: str, subscription_data: dict):
     """Handle subscription activation"""
     try:
@@ -1171,9 +1148,6 @@ async def handle_subscription_activated(conn, subscription_id: str, subscription
         
     except Exception as e:
         logger.error(f"Error activating subscription {subscription_id}: {str(e)}")
-
-
-
 
 async def handle_subscription_charged(conn, subscription_id: str, subscription_data: dict, payment_data: dict):
     """Handle successful subscription charge"""
@@ -1228,18 +1202,17 @@ async def handle_subscription_charged(conn, subscription_id: str, subscription_d
     except Exception as e:
         logger.error(f"Error handling subscription charge for {subscription_id}: {str(e)}")
 
-
 async def handle_charge_failed(conn, subscription_id: str, subscription_data: dict):
     """Handle failed subscription charge"""
     try:
         await conn.execute("""
             UPDATE payments 
-            SET status = 'past_due', updated_at = NOW()
+            SET status = 'failed', updated_at = NOW()
             WHERE razorpay_subscription_id = $1
         """, subscription_id)
         
         # Optional: Send notification to user about failed payment
-        logger.warning(f"Subscription {subscription_id} charge failed - marked as past_due")
+        logger.warning(f"Subscription {subscription_id} charge failed - marked as failed")
     except Exception as e:
         logger.error(f"Error handling charge failed for {subscription_id}: {str(e)}")
 
@@ -1259,9 +1232,10 @@ async def handle_subscription_cancelled(conn, subscription_id: str):
 async def handle_subscription_completed(conn, subscription_id: str):
     """Handle subscription completion (natural end)"""
     try:
+        # Map completed to cancelled since you don't have 'completed' in enum
         await conn.execute("""
             UPDATE payments 
-            SET status = 'completed', end_at = NOW(), updated_at = NOW()
+            SET status = 'cancelled', end_at = NOW(), updated_at = NOW()
             WHERE razorpay_subscription_id = $1
         """, subscription_id)
         
@@ -1294,16 +1268,6 @@ async def handle_subscription_resumed(conn, subscription_id: str):
         logger.info(f"Subscription {subscription_id} resumed")
     except Exception as e:
         logger.error(f"Error handling subscription resume for {subscription_id}: {str(e)}")
-async def handle_subscription_completed(conn, subscription_id: str):
-    """Handle subscription completion (natural end)"""
-    await conn.execute("""
-        UPDATE payments 
-        SET status = 'completed', end_at = NOW(), updated_at = NOW()
-        WHERE razorpay_subscription_id = $1
-    """, subscription_id)
-    
-    logger.info(f"Subscription {subscription_id} completed")
-
 
 # --- Startup and shutdown events ---
 @asynccontextmanager
