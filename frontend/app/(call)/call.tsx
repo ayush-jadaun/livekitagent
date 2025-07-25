@@ -67,6 +67,7 @@ export default function App() {
   const [shouldAutoStart, setShouldAutoStart] = useState<boolean>(true);
   const [trialSecondsRemaining, setTrialSecondsRemaining] =
     useState<number>(TRIAL_LIMIT_SECONDS);
+  const [isSubscribed, setIsSubscribed] = useState<boolean>(false);
 
   const router = useRouter();
 
@@ -178,6 +179,28 @@ export default function App() {
     }
   };
 
+  const checkSubscriptionStatus = async (
+    accessToken: string
+  ): Promise<boolean> => {
+    try {
+      const response = await fetch(`${SERVER_URL}/api/payments/current`, {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+        },
+      });
+      if (response.ok) {
+        // User has an active subscription
+        return true;
+      }
+      // A 404 Not Found is expected if no active subscription
+      return false;
+    } catch (error) {
+      console.error("Error checking subscription status:", error);
+      // Fail safe, assume not subscribed on error
+      return false;
+    }
+  };
+
   const checkExistingRoom = async (
     accessToken: string
   ): Promise<RoomInfo | null> => {
@@ -252,6 +275,11 @@ export default function App() {
         throw new Error("No active session");
       }
 
+      // Check subscription status
+      const subscribed = await checkSubscriptionStatus(session.access_token);
+      setIsSubscribed(subscribed);
+      console.log("User subscribed:", subscribed);
+
       let room = await checkExistingRoom(session.access_token);
 
       if (!room) {
@@ -264,7 +292,11 @@ export default function App() {
       }
 
       setRoomInfo(room);
-      setTrialSecondsRemaining(TRIAL_LIMIT_SECONDS - room.trial_seconds_used);
+      // Only set trial seconds if user is NOT subscribed
+      if (!subscribed) {
+        setTrialSecondsRemaining(TRIAL_LIMIT_SECONDS - room.trial_seconds_used);
+      }
+
       console.log("Room initialized:", room.room_name);
 
       await startSession(session.access_token, room);
@@ -416,6 +448,7 @@ export default function App() {
           sessionId={currentSession?.session_id}
           trialSecondsRemaining={trialSecondsRemaining}
           setTrialSecondsRemaining={setTrialSecondsRemaining}
+          isSubscribed={isSubscribed}
         />
       </LiveKitRoom>
     );
@@ -460,6 +493,7 @@ interface RoomViewProps {
   onDisconnect: () => void;
   roomName: string;
   sessionId?: string;
+  isSubscribed: boolean;
   trialSecondsRemaining: number;
   setTrialSecondsRemaining: React.Dispatch<React.SetStateAction<number>>;
 }
@@ -468,6 +502,7 @@ const RoomView: React.FC<RoomViewProps> = ({
   onDisconnect,
   roomName,
   sessionId,
+  isSubscribed,
   trialSecondsRemaining,
   setTrialSecondsRemaining,
 }) => {
@@ -487,6 +522,9 @@ const RoomView: React.FC<RoomViewProps> = ({
   const isUserSpeaking = room.localParticipant?.isSpeaking ?? false;
 
   useEffect(() => {
+    // Only run timer logic if user is NOT subscribed
+    if (isSubscribed) return;
+
     if (trialSecondsRemaining <= 0) {
       Alert.alert("Trial Over", "Your free trial has ended.", [
         { text: "OK", onPress: () => onDisconnect() },
@@ -499,7 +537,7 @@ const RoomView: React.FC<RoomViewProps> = ({
     }, 1000);
 
     return () => clearInterval(timer);
-  }, [trialSecondsRemaining, onDisconnect]);
+  }, [trialSecondsRemaining, onDisconnect, isSubscribed]);
 
   useEffect(() => {
     if (participantCount > 1 && statusMessage !== null) {
@@ -562,12 +600,14 @@ const RoomView: React.FC<RoomViewProps> = ({
           <Text style={styles.brandText}>Rasmlai</Text>
         </View>
 
-        {/* Trial Timer */}
-        <View style={styles.timerContainer}>
-          <Text style={styles.timerText}>
-            Trial time remaining: {formatTime(trialSecondsRemaining)}
-          </Text>
-        </View>
+        {/* Trial Timer - Conditionally Rendered */}
+        {!isSubscribed && (
+          <View style={styles.timerContainer}>
+            <Text style={styles.timerText}>
+              Trial time remaining: {formatTime(trialSecondsRemaining)}
+            </Text>
+          </View>
+        )}
 
         {/* Status Container */}
         <View style={styles.statusContainer}>

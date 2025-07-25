@@ -15,6 +15,7 @@ import logging
 from contextlib import asynccontextmanager
 import subprocess
 from datetime import datetime, timedelta, timezone
+
 # Payment imports
 import razorpay
 import hmac
@@ -77,7 +78,6 @@ if not RAZORPAY_WEBHOOK_SECRET:
     raise ValueError("RAZORPAY_WEBHOOK_SECRET is required")
 
 TRIAL_LIMIT_SECONDS=150
-
 
 def trigger_agent_connection(room_name: str):
     """Start agent process for the room via subprocess and track it."""
@@ -184,8 +184,8 @@ async def get_current_user_with_metadata(credentials: HTTPAuthorizationCredentia
         token = credentials.credentials
         logger.info(f"Attempting to decode token: {token[:20]}...")
         payload = jwt.decode(
-            token, 
-            SUPABASE_JWT_SECRET, 
+            token,
+            SUPABASE_JWT_SECRET,
             algorithms=["HS256"],
             audience="authenticated",
             issuer="https://qivmwvqzgyykzmmofnqz.supabase.co/auth/v1"
@@ -214,9 +214,7 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
 async def ensure_user_exists(conn, user_id: str, supabase_user: Optional[Dict] = None):
     """Ensure user exists in database and has a room assigned"""
     try:
-        existing_user = await conn.fetchrow(
-            "SELECT id FROM users WHERE id = $1", user_id
-        )
+        existing_user = await conn.fetchrow("SELECT id FROM users WHERE id = $1", user_id)
         if not existing_user:
             name = 'Anonymous'
             age = None
@@ -233,9 +231,8 @@ async def ensure_user_exists(conn, user_id: str, supabase_user: Optional[Dict] =
                 VALUES ($1, $2, $3, 'Pending', NOW(), NOW())
             """, user_id, name, age)
             logger.info(f"Created new user: {user_id} with name: {name}, age: {age}")
-        room = await conn.fetchrow(
-            "SELECT id, room_name FROM room WHERE user_id = $1", user_id
-        )
+
+        room = await conn.fetchrow("SELECT id, room_name FROM room WHERE user_id = $1", user_id)
         if not room:
             room_name = f"room_{user_id}"
             room_id = await conn.fetchval("""
@@ -259,7 +256,7 @@ async def create_session(conn, user_id: str, room_id: str):
                 RETURNING id
             """, user_id, room_id)
             await conn.execute("""
-                UPDATE room 
+                UPDATE room
                 SET room_condition = 'on', updated_at = NOW()
                 WHERE id = $1
             """, room_id)
@@ -272,38 +269,51 @@ async def create_session(conn, user_id: str, room_id: str):
 async def end_session(conn, session_id: str, user_id: str):
     try:
         async with conn.transaction():
-
+            # Find the active session for the user
             session = await conn.fetchrow(
-                "SELECT started_at FROM sessions WHERE id = $1 AND user_id = $2 AND finished_at IS NULL",
+                "SELECT id, started_at FROM sessions WHERE id = $1 AND user_id = $2 AND finished_at IS NULL",
                 session_id, user_id
             )
             if not session:
-                logger.warning(f"Attempted to end a non-existent or already ended session: {session_id}")
+                logger.warning(f"Attempted to end a non-existent or already ended session: {session_id} for user {user_id}")
                 return
-            
+
+            # Mark session as finished
             await conn.execute("""
                 UPDATE sessions 
                 SET finished_at = NOW()
-                WHERE id = $1 AND user_id = $2
-            """, session_id, user_id)
+                WHERE id = $1
+            """, session_id)
+            
+            # Check if the user is on a paid plan. If not, update their trial usage.
+            is_subscribed, _ = await check_payment_status(user_id, conn)
+            
+            if not is_subscribed:
+                # This was a trial session, so we record the duration used.
+                duration = datetime.now(timezone.utc) - session['started_at']
+                duration_seconds = int(duration.total_seconds())
 
-            # CORRECTED: Use timezone-aware 'now' to match the database's timezone-aware timestamp
-            duration = datetime.now(timezone.utc) - session['started_at']
-            duration_seconds = int(duration.total_seconds())
+                await conn.execute(
+                    "UPDATE users SET trial_seconds_used = trial_seconds_used + $1 WHERE id = $2",
+                    duration_seconds, user_id
+                )
+                logger.info(f"Recorded {duration_seconds}s of trial usage for user {user_id}")
+            else:
+                # This was a paid session, no need to update trial usage.
+                logger.info(f"User {user_id} is subscribed, not updating trial usage.")
 
-            await conn.execute(
-                "UPDATE users SET trial_seconds_used = trial_seconds_used + $1 WHERE id = $2",
-                duration_seconds, user_id
-            )
+            # Set room condition to 'off'
             await conn.execute("""
                 UPDATE room 
                 SET room_condition = 'off', updated_at = NOW()
                 WHERE user_id = $1
             """, user_id)
+            
             logger.info(f"Ended session {session_id} for user {user_id}")
     except Exception as e:
         logger.error(f"Error ending session: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to end session")
+
 # --- Payment utility ---
 def verify_razorpay_signature(payload_body: bytes, signature: str, secret: str) -> bool:
     """Verify Razorpay webhook signature"""
@@ -313,7 +323,7 @@ def verify_razorpay_signature(payload_body: bytes, signature: str, secret: str) 
             payload_body,
             hashlib.sha256
         ).hexdigest()
-        
+
         # Razorpay sends signature in format: "sha256=hash"
         # Extract just the hash part
         if signature.startswith('sha256='):
@@ -330,12 +340,12 @@ async def check_payment_status(user_id: str, conn) -> tuple[bool, str]:
     try:
         payment = await conn.fetchrow("""
             SELECT session_limit, session_used, status, end_at, next_billing_at, razorpay_subscription_id
-            FROM payments 
+            FROM payments
             WHERE user_id = $1 AND status IN ('active', 'past_due', 'active', 'created')
             ORDER BY created_at DESC
             LIMIT 1
         """, user_id)
-        
+
         if not payment:
             return False, "No active subscription found"
         
@@ -374,7 +384,7 @@ async def check_payment_status(user_id: str, conn) -> tuple[bool, str]:
                 return False, "Unable to verify subscription status"
         
         # Check if subscription has expired
-        if payment['end_at'] and payment['end_at'] < datetime.utcnow():
+        if payment['end_at'] and payment['end_at'] < datetime.utcnow().replace(tzinfo=None):
             return False, "Subscription has expired"
         
         # Check session limits
@@ -385,17 +395,19 @@ async def check_payment_status(user_id: str, conn) -> tuple[bool, str]:
         if payment['status'] == 'past_due':
             # Allow limited usage during grace period (e.g., 3 days)
             grace_period = timedelta(days=3)
-            if payment['next_billing_at'] and (datetime.utcnow() - payment['next_billing_at']) > grace_period:
+            if payment['next_billing_at'] and (datetime.utcnow().replace(tzinfo=None) - payment['next_billing_at']) > grace_period:
                 return False, "Payment overdue beyond grace period"
         
-        return True, "Active subscription"
+        if payment['status'] == 'active':
+             return True, "Active subscription"
+
+        return False, "Subscription not active"
         
     except Exception as e:
         logger.error(f"Error checking payment status: {str(e)}")
         return False, "Error checking subscription status"
 
 # --- ROUTES ---
-
 @app.post("/api/users/profile/sync")
 async def sync_user_profile_from_token(
     credentials: HTTPAuthorizationCredentials = Depends(security),
@@ -411,19 +423,19 @@ async def sync_user_profile_from_token(
         logger.info(f"Syncing profile for user {user_id}: name={name}, age={age}")
         await ensure_user_exists(conn, user_id, token_payload)
         await conn.execute("""
-            UPDATE users 
+            UPDATE users
             SET name = $1, age = $2, onboarding = 'Done', updated_at = NOW()
             WHERE id = $3
         """, name, age, user_id)
         user_data = await conn.fetchrow("""
-            SELECT id, name, age, onboarding, created_at, updated_at 
-            FROM users 
+            SELECT id, name, age, onboarding, created_at, updated_at
+            FROM users
             WHERE id = $1
         """, user_id)
         if not user_data:
             raise HTTPException(status_code=404, detail="User not found after sync")
         return UserProfileResponse(
-            user_id=str(user_data['id']), 
+            user_id=str(user_data['id']),
             name=user_data['name'],
             age=user_data['age'],
             onboarding=user_data['onboarding'],
@@ -447,7 +459,7 @@ async def setup_user(
             conn, user_id, user_data.model_dump()
         )
         await conn.execute("""
-            UPDATE users 
+            UPDATE users
             SET name = $1, age = $2, onboarding = 'Done', updated_at = NOW()
             WHERE id = $3
         """, user_data.name, user_data.age, user_id)
@@ -467,36 +479,54 @@ async def start_session(
     conn = Depends(get_db)
 ):
     try:
-        # 1. Fetch user's trial status first
-        user = await conn.fetchrow("SELECT trial_seconds_used FROM users WHERE id = $1", user_id)
-        if not user:
-            # This should be handled by ensure_user_exists, but as a safeguard:
-            raise HTTPException(status_code=404, detail="User not found.")
+        # 1. Check for an active subscription first.
+        is_subscribed, payment_message = await check_payment_status(user_id, conn)
 
-        # 2. Check if trial is exhausted
-        if user['trial_seconds_used'] >= TRIAL_LIMIT_SECONDS:
-            logger.info(f"User {user_id} has exhausted trial ({user['trial_seconds_used']}s). Checking for subscription.")
-            # Trial is over, check for a valid payment/subscription
-            can_start, message = await check_payment_status(user_id, conn)
-            if not can_start:
-                # No trial AND no subscription, block the call.
-                raise HTTPException(status_code=403, detail="Your free trial has ended. Please subscribe to continue.")
-        else:
-             logger.info(f"User {user_id} has {TRIAL_LIMIT_SECONDS - user['trial_seconds_used']}s of trial remaining.")
+        if is_subscribed:
+            # --- PAID USER LOGIC ---
+            logger.info(f"User {user_id} has an active subscription. Starting paid session.")
+            
+            # Ensure user and room exist
+            room_id, room_name = await ensure_user_exists(conn, user_id)
+            session_id = await create_session(conn, user_id, room_id)
 
-        # 3. If checks pass, proceed to create the session
-        room_id, room_name = await ensure_user_exists(conn, user_id)
-        session_id = await create_session(conn, user_id, room_id)
-
-        # Increment usage for paid users
-        if user['trial_seconds_used'] >= TRIAL_LIMIT_SECONDS:
+            # Increment paid session usage
             await conn.execute(
-                "UPDATE payments SET session_used = session_used + 1, updated_at = NOW() WHERE user_id = $1 AND status IN ('active', 'past_due')",
+                """
+                UPDATE payments 
+                SET session_used = session_used + 1, updated_at = NOW() 
+                WHERE user_id = $1 AND status IN ('active', 'past_due')
+                """,
                 user_id
             )
             logger.info(f"Incremented paid session usage for user {user_id}")
 
-        # 4. Generate LiveKit token
+        else:
+            # --- TRIAL USER LOGIC ---
+            logger.info(f"User {user_id} has no active subscription. Checking trial status.")
+            
+            # Fetch user's trial status
+            user = await conn.fetchrow("SELECT trial_seconds_used FROM users WHERE id = $1", user_id)
+            if not user:
+                 # This should be handled by ensure_user_exists, but as a safeguard:
+                await ensure_user_exists(conn, user_id)
+                user = await conn.fetchrow("SELECT trial_seconds_used FROM users WHERE id = $1", user_id)
+
+            if not user:
+                raise HTTPException(status_code=404, detail="User not found.")
+            
+            # Check if trial is exhausted
+            if user['trial_seconds_used'] >= TRIAL_LIMIT_SECONDS:
+                logger.warning(f"User {user_id} has exhausted trial ({user['trial_seconds_used']}s) and has no subscription.")
+                raise HTTPException(status_code=403, detail="Your free trial has ended. Please subscribe to continue.")
+            
+            logger.info(f"User {user_id} has {TRIAL_LIMIT_SECONDS - user['trial_seconds_used']}s of trial remaining.")
+            
+            # Proceed with trial session
+            room_id, room_name = await ensure_user_exists(conn, user_id)
+            session_id = await create_session(conn, user_id, room_id)
+
+        # 5. If all checks pass, generate LiveKit token and return response
         token = api.AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET) \
             .with_identity(user_id) \
             .with_name(f"user_{user_id}") \
@@ -515,6 +545,7 @@ async def start_session(
     except Exception as e:
         logger.error(f"Error starting session: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to start session")
+
 @app.post("/api/sessions/{session_id}/end")
 async def end_session_endpoint(
     session_id: str,
@@ -564,6 +595,7 @@ async def get_user_room(
     except Exception as e:
         logger.error(f"Error getting room info: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to get room info")
+
 @app.get("/api/sessions/active")
 async def get_active_sessions(
     user_id: str = Depends(get_current_user),
@@ -595,10 +627,10 @@ def get_token(
         ).with_identity(identity) \
          .with_name(name) \
          .with_grants(api.VideoGrants(
-             room_join=True,
-             room=room,
-             room_create=True,
-         ))
+            room_join=True,
+            room=room,
+            room_create=True,
+        ))
         return token.to_jwt()
     except Exception as e:
         logger.error(f"Error generating token: {str(e)}")
@@ -688,7 +720,7 @@ async def create_razorpay_customer(
     except Exception as e:
         logger.error(f"Error creating Razorpay customer: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to create customer")
-    
+
 @app.post("/api/payments/create-subscription")
 async def create_subscription(
     request: CreateSubscriptionRequest,
@@ -698,10 +730,10 @@ async def create_subscription(
     try:
         # Get plan details from your database
         plan = await conn.fetchrow("""
-            SELECT id, name, monthly_price, monthly_limit, razorpay_plan_id 
+            SELECT id, name, monthly_price, monthly_limit, razorpay_plan_id
             FROM plans WHERE id = $1
         """, request.plan_id)
-        
+
         if not plan:
             raise HTTPException(status_code=404, detail="Plan not found")
 
@@ -843,7 +875,6 @@ async def create_subscription(
         logger.error(f"Traceback: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"Failed to create subscription: {str(e)}")
 
-
 @app.get("/api/payments/current", response_model=PaymentResponse)
 async def get_current_payment(
     user_id: str = Depends(get_current_user),
@@ -858,7 +889,7 @@ async def get_current_payment(
             ORDER BY p.created_at DESC
             LIMIT 1
         """, user_id)
-        
+
         if not payment:
             raise HTTPException(status_code=404, detail="No active payment found")
         
@@ -882,8 +913,6 @@ async def get_current_payment(
     except Exception as e:
         logger.error(f"Error fetching current payment: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to fetch payment details")
-   
-
 
 @app.get("/api/payments/history")
 async def get_payment_history(
@@ -923,7 +952,7 @@ async def cancel_subscription(
     try:
         payment = await conn.fetchrow("""
             SELECT razorpay_subscription_id, id
-            FROM payments 
+            FROM payments
             WHERE user_id = $1 AND status = 'active'
             ORDER BY created_at DESC
             LIMIT 1
@@ -932,7 +961,7 @@ async def cancel_subscription(
             raise HTTPException(status_code=404, detail="No active subscription found")
         razorpay_client.subscription.cancel(payment['razorpay_subscription_id'])
         await conn.execute("""
-            UPDATE payments 
+            UPDATE payments
             SET status = 'cancelled', updated_at = NOW()
             WHERE id = $1
         """, payment['id'])
@@ -949,7 +978,7 @@ async def increment_session_usage(
     try:
         payment = await conn.fetchrow("""
             SELECT id, session_limit, session_used
-            FROM payments 
+            FROM payments
             WHERE user_id = $1 AND status = 'active'
             ORDER BY created_at DESC
             LIMIT 1
@@ -959,7 +988,7 @@ async def increment_session_usage(
         if payment['session_used'] >= payment['session_limit']:
             raise HTTPException(status_code=403, detail="Session limit exceeded")
         new_usage = await conn.fetchval("""
-            UPDATE payments 
+            UPDATE payments
             SET session_used = session_used + 1, updated_at = NOW()
             WHERE id = $1
             RETURNING session_used
@@ -983,7 +1012,7 @@ async def get_usage_stats(
     try:
         payment = await conn.fetchrow("""
             SELECT session_limit, session_used, status, next_billing_at
-            FROM payments 
+            FROM payments
             WHERE user_id = $1 AND status = 'active'
             ORDER BY created_at DESC
             LIMIT 1
@@ -1013,7 +1042,7 @@ async def razorpay_webhook(request: Request, conn = Depends(get_db)):
     try:
         body = await request.body()
         signature = request.headers.get('X-Razorpay-Signature')
-        
+
         # Only verify with webhook secret, not API secret
         if not signature or not verify_razorpay_signature(body, signature, RAZORPAY_WEBHOOK_SECRET):
             logger.error("Invalid webhook signature")
@@ -1111,14 +1140,13 @@ async def razorpay_webhook(request: Request, conn = Depends(get_db)):
         logger.error(f"Traceback: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail="Webhook processing failed")
 
-
 async def handle_subscription_authenticated(conn, subscription_id: str, subscription_data: dict):
     """Handle subscription authentication (moves from created to active)"""
     try:
         # Log the subscription data for debugging
         logger.info(f"Processing authentication for subscription {subscription_id}")
         logger.info(f"Subscription status in webhook: {subscription_data.get('status') if subscription_data else 'No data'}")
-        
+
         # Update status to active when subscription is authenticated
         # Note: Using only valid enum values from your database
         result = await conn.execute("""
@@ -1160,19 +1188,18 @@ async def handle_subscription_authenticated(conn, subscription_id: str, subscrip
         import traceback
         logger.error(f"Traceback: {traceback.format_exc()}")
 
-
 async def handle_subscription_activated(conn, subscription_id: str, subscription_data: dict):
     """Handle subscription activation"""
     try:
         if not subscription_data:
             logger.warning(f"No subscription data provided for activation of {subscription_id}")
             return
-            
+
         start_time = subscription_data.get('start_at')
         if start_time:
-            start_dt = datetime.fromtimestamp(start_time)
+            start_dt = datetime.fromtimestamp(start_time, tz=timezone.utc)
         else:
-            start_dt = datetime.utcnow()
+            start_dt = datetime.now(timezone.utc)
         
         result = await conn.execute("""
             UPDATE payments 
@@ -1192,7 +1219,7 @@ async def handle_subscription_charged(conn, subscription_id: str, subscription_d
         if not subscription_data:
             logger.warning(f"No subscription data provided for charge of {subscription_id}")
             return
-            
+
         next_billing = subscription_data.get('next_billing_at')
         amount = payment_data.get('amount', 0) if payment_data else 0
         
@@ -1212,7 +1239,7 @@ async def handle_subscription_charged(conn, subscription_id: str, subscription_d
         if current_payment['last_reset_at']:
             # Check if we've already reset sessions for this billing cycle
             last_reset = current_payment['last_reset_at']
-            if (datetime.utcnow() - last_reset).days < 25:  # Less than 25 days since last reset
+            if (datetime.now(timezone.utc) - last_reset).days < 25:  # Less than 25 days since last reset
                 should_reset_sessions = False
         
         update_query = """
@@ -1223,7 +1250,7 @@ async def handle_subscription_charged(conn, subscription_id: str, subscription_d
                 last_payment_at = NOW(),
                 updated_at = NOW()
         """
-        params = [datetime.fromtimestamp(next_billing) if next_billing else None, amount]
+        params = [datetime.fromtimestamp(next_billing, tz=timezone.utc) if next_billing else None, amount]
         
         if should_reset_sessions:
             update_query += ", session_used = 0, last_reset_at = NOW()"
@@ -1243,11 +1270,11 @@ async def handle_charge_failed(conn, subscription_id: str, subscription_data: di
     """Handle failed subscription charge"""
     try:
         await conn.execute("""
-            UPDATE payments 
+            UPDATE payments
             SET status = 'failed', updated_at = NOW()
             WHERE razorpay_subscription_id = $1
         """, subscription_id)
-        
+
         # Optional: Send notification to user about failed payment
         logger.warning(f"Subscription {subscription_id} charge failed - marked as failed")
     except Exception as e:
@@ -1257,11 +1284,11 @@ async def handle_subscription_cancelled(conn, subscription_id: str):
     """Handle subscription cancellation"""
     try:
         await conn.execute("""
-            UPDATE payments 
+            UPDATE payments
             SET status = 'cancelled', end_at = NOW(), updated_at = NOW()
             WHERE razorpay_subscription_id = $1
         """, subscription_id)
-        
+
         logger.info(f"Subscription {subscription_id} cancelled")
     except Exception as e:
         logger.error(f"Error handling subscription cancellation for {subscription_id}: {str(e)}")
@@ -1271,11 +1298,11 @@ async def handle_subscription_completed(conn, subscription_id: str):
     try:
         # Map completed to cancelled since you don't have 'completed' in enum
         await conn.execute("""
-            UPDATE payments 
+            UPDATE payments
             SET status = 'cancelled', end_at = NOW(), updated_at = NOW()
             WHERE razorpay_subscription_id = $1
         """, subscription_id)
-        
+
         logger.info(f"Subscription {subscription_id} completed")
     except Exception as e:
         logger.error(f"Error handling subscription completion for {subscription_id}: {str(e)}")
@@ -1284,11 +1311,11 @@ async def handle_subscription_paused(conn, subscription_id: str):
     """Handle subscription pause"""
     try:
         await conn.execute("""
-            UPDATE payments 
+            UPDATE payments
             SET status = 'paused', updated_at = NOW()
             WHERE razorpay_subscription_id = $1
         """, subscription_id)
-        
+
         logger.info(f"Subscription {subscription_id} paused")
     except Exception as e:
         logger.error(f"Error handling subscription pause for {subscription_id}: {str(e)}")
@@ -1297,11 +1324,11 @@ async def handle_subscription_resumed(conn, subscription_id: str):
     """Handle subscription resume"""
     try:
         await conn.execute("""
-            UPDATE payments 
+            UPDATE payments
             SET status = 'active', updated_at = NOW()
             WHERE razorpay_subscription_id = $1
         """, subscription_id)
-        
+
         logger.info(f"Subscription {subscription_id} resumed")
     except Exception as e:
         logger.error(f"Error handling subscription resume for {subscription_id}: {str(e)}")
@@ -1318,7 +1345,7 @@ async def lifespan(app: FastAPI):
         if db_pool:
             await db_pool.close()
             logger.info("Database connection pool closed")
-        for room, proc in active_agents.items():
+        for room, proc in list(active_agents.items()):
             logger.info(f"Shutting down agent for room {room}, PID {proc.pid}")
             proc.terminate()
         active_agents.clear()
