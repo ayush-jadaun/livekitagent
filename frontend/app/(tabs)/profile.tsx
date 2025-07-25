@@ -4,7 +4,6 @@ import {
   Text,
   StyleSheet,
   TouchableOpacity,
-  Dimensions,
   SafeAreaView,
   ScrollView,
   Alert,
@@ -17,7 +16,7 @@ import { router } from "expo-router";
 import { supabase } from "../../lib/supabase";
 import { User } from "@supabase/supabase-js";
 
-const { width, height } = Dimensions.get("window");
+
 
 // Mental health app color palette
 const COLORS = {
@@ -64,6 +63,7 @@ export default function ProfileScreen() {
 
   useEffect(() => {
     loadUserData();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const loadUserData = async () => {
@@ -386,8 +386,8 @@ export default function ProfileScreen() {
             activeOpacity={0.7}
             onPress={handleSettings}
           >
-            <Text style={styles.menuEmoji}>⚙️</Text>
-            <Text style={styles.menuText}>Settings</Text>
+            <Text style={styles.menuEmoji}>❤️</Text>
+            <Text style={styles.menuText}>Subscription</Text>
             <Text style={styles.menuArrow}>→</Text>
           </TouchableOpacity>
 
