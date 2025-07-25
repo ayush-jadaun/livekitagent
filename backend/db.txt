@@ -181,3 +181,55 @@ CREATE POLICY "Users can insert own summaries" ON summary
 -- FROM room r
 -- JOIN users u ON r.user_id = u.id
 -- WHERE r.room_condition = 'on';
+
+
+
+
+
+
+
+-- ENUM for payment status
+CREATE TYPE payment_status AS ENUM ('active', 'cancelled', 'failed', 'paused');
+
+-- payment plans (optional, if you plan tiers like Starter, Pro, Enterprise)
+CREATE TABLE plans (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name TEXT UNIQUE NOT NULL,
+    monthly_price INTEGER NOT NULL, -- in paise
+    monthly_limit INTEGER NOT NULL, -- e.g., 2.5 million sessions
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+-- payments table
+CREATE TABLE payments (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    plan_id UUID REFERENCES plans(id),
+    razorpay_customer_id TEXT NOT NULL,
+    razorpay_subscription_id TEXT NOT NULL,
+    status payment_status NOT NULL,
+    session_limit BIGINT NOT NULL DEFAULT 2500000,
+    session_used BIGINT NOT NULL DEFAULT 0,
+    start_at TIMESTAMP NOT NULL,
+    end_at TIMESTAMP,
+    next_billing_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+-- Indexes
+CREATE INDEX idx_payments_user_id ON payments(user_id);
+
+ALTER TABLE payments ADD COLUMN IF NOT EXISTS last_reset_at TIMESTAMP;
+ALTER TABLE payments ADD COLUMN IF NOT EXISTS last_payment_amount INTEGER;
+ALTER TABLE payments ADD COLUMN IF NOT EXISTS last_payment_at TIMESTAMP;
+ALTER TABLE payments ADD COLUMN IF NOT EXISTS grace_period_ends_at TIMESTAMP;
+
+
+CREATE INDEX IF NOT EXISTS idx_payments_user_status ON payments(user_id, status);
+CREATE INDEX IF NOT EXISTS idx_payments_subscription_id ON payments(razorpay_subscription_id);
+
+ALTER TABLE users
+ADD COLUMN trial_seconds_used INTEGER NOT NULL DEFAULT 0;
+
+ALTER TYPE payment_status ADD VALUE 'past_due';

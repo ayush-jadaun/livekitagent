@@ -30,13 +30,14 @@ registerGlobals();
 
 const { width, height } = Dimensions.get("window");
 const SERVER_URL = process.env.EXPO_PUBLIC_SERVER_URL;
-
+const TRIAL_LIMIT_SECONDS = 150;
 console.log(SERVER_URL);
 
 interface RoomInfo {
   room_id: string;
   room_name: string;
   room_condition: "on" | "off";
+  trial_seconds_used: number;
 }
 
 interface CurrentSession {
@@ -64,6 +65,9 @@ export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [shouldAutoStart, setShouldAutoStart] = useState<boolean>(true);
+  const [trialSecondsRemaining, setTrialSecondsRemaining] =
+    useState<number>(TRIAL_LIMIT_SECONDS);
+  const [isSubscribed, setIsSubscribed] = useState<boolean>(false);
 
   const router = useRouter();
 
@@ -143,6 +147,15 @@ export default function App() {
   // After showing error, push user to homepage after 2-3 seconds
   useEffect(() => {
     if (error) {
+      if (error.includes("free trial has ended")) {
+        // Redirect immediately for trial ended error
+        Alert.alert(
+          "Trial Ended",
+          "Your free trial has ended. Please subscribe to continue.",
+          [{ text: "OK", onPress: () => router.replace("/(payment)/payment") }]
+        );
+        return;
+      }
       const timeout = setTimeout(() => {
         router.replace("/");
       }, 2500);
@@ -163,6 +176,28 @@ export default function App() {
       }
     } catch (error) {
       console.error("Error checking auth:", error);
+    }
+  };
+
+  const checkSubscriptionStatus = async (
+    accessToken: string
+  ): Promise<boolean> => {
+    try {
+      const response = await fetch(`${SERVER_URL}/api/payments/current`, {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+        },
+      });
+      if (response.ok) {
+        // User has an active subscription
+        return true;
+      }
+      // A 404 Not Found is expected if no active subscription
+      return false;
+    } catch (error) {
+      console.error("Error checking subscription status:", error);
+      // Fail safe, assume not subscribed on error
+      return false;
     }
   };
 
@@ -204,6 +239,7 @@ export default function App() {
           room_id: roomData.room_id,
           room_name: roomData.room_name,
           room_condition: "off",
+          trial_seconds_used: 0,
         };
       }
       return null;
@@ -239,6 +275,11 @@ export default function App() {
         throw new Error("No active session");
       }
 
+      // Check subscription status
+      const subscribed = await checkSubscriptionStatus(session.access_token);
+      setIsSubscribed(subscribed);
+      console.log("User subscribed:", subscribed);
+
       let room = await checkExistingRoom(session.access_token);
 
       if (!room) {
@@ -251,6 +292,11 @@ export default function App() {
       }
 
       setRoomInfo(room);
+      // Only set trial seconds if user is NOT subscribed
+      if (!subscribed) {
+        setTrialSecondsRemaining(TRIAL_LIMIT_SECONDS - room.trial_seconds_used);
+      }
+
       console.log("Room initialized:", room.room_name);
 
       await startSession(session.access_token, room);
@@ -279,7 +325,8 @@ export default function App() {
       });
 
       if (!response.ok) {
-        throw new Error("Failed to start session");
+        const errorData = await response.json();
+        throw new Error(errorData.detail || "Failed to start session");
       }
 
       const sessionData: CurrentSession = await response.json();
@@ -291,9 +338,11 @@ export default function App() {
 
       console.log("Session started:", sessionData.session_id);
       console.log("Room:", sessionData.room_name);
-    } catch (error) {
-      // Server likely offline/network error
-      throw new Error("Server is offline. Please try again later.");
+    } catch (error: any) {
+      console.error("Start session error:", error);
+      throw new Error(
+        error.message || "Server is offline. Please try again later."
+      );
     }
   };
 
@@ -397,6 +446,9 @@ export default function App() {
           onDisconnect={endSession}
           roomName={roomInfo?.room_name || "Unknown Room"}
           sessionId={currentSession?.session_id}
+          trialSecondsRemaining={trialSecondsRemaining}
+          setTrialSecondsRemaining={setTrialSecondsRemaining}
+          isSubscribed={isSubscribed}
         />
       </LiveKitRoom>
     );
@@ -441,12 +493,18 @@ interface RoomViewProps {
   onDisconnect: () => void;
   roomName: string;
   sessionId?: string;
+  isSubscribed: boolean;
+  trialSecondsRemaining: number;
+  setTrialSecondsRemaining: React.Dispatch<React.SetStateAction<number>>;
 }
 
 const RoomView: React.FC<RoomViewProps> = ({
   onDisconnect,
   roomName,
   sessionId,
+  isSubscribed,
+  trialSecondsRemaining,
+  setTrialSecondsRemaining,
 }) => {
   const [statusMessage, setStatusMessage] = useState<string | null>(
     "Agent is joining, please wait..."
@@ -456,11 +514,30 @@ const RoomView: React.FC<RoomViewProps> = ({
   // Get reactive room state and participants
   const room = useRoomContext();
   const remoteParticipants = useRemoteParticipants();
+  const router = useRouter();
 
   const participantCount = remoteParticipants.length + 1;
   const agent = remoteParticipants[0];
   const isAgentSpeaking = agent?.isSpeaking ?? false;
   const isUserSpeaking = room.localParticipant?.isSpeaking ?? false;
+
+  useEffect(() => {
+    // Only run timer logic if user is NOT subscribed
+    if (isSubscribed) return;
+
+    if (trialSecondsRemaining <= 0) {
+      Alert.alert("Trial Over", "Your free trial has ended.", [
+        { text: "OK", onPress: () => onDisconnect() },
+      ]);
+      return;
+    }
+
+    const timer = setInterval(() => {
+      setTrialSecondsRemaining((prev) => prev - 1);
+    }, 1000);
+
+    return () => clearInterval(timer);
+  }, [trialSecondsRemaining, onDisconnect, isSubscribed]);
 
   useEffect(() => {
     if (participantCount > 1 && statusMessage !== null) {
@@ -498,6 +575,12 @@ const RoomView: React.FC<RoomViewProps> = ({
     onDisconnect();
   };
 
+  const formatTime = (seconds: number) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins}:${secs < 10 ? "0" : ""}${secs}`;
+  };
+
   return (
     <SafeAreaView style={styles.metalCallContainer}>
       <StatusBar barStyle="light-content" backgroundColor="#0a0a0a" />
@@ -516,6 +599,15 @@ const RoomView: React.FC<RoomViewProps> = ({
         <View style={styles.brandContainer}>
           <Text style={styles.brandText}>Rasmlai</Text>
         </View>
+
+        {/* Trial Timer - Conditionally Rendered */}
+        {!isSubscribed && (
+          <View style={styles.timerContainer}>
+            <Text style={styles.timerText}>
+              Trial time remaining: {formatTime(trialSecondsRemaining)}
+            </Text>
+          </View>
+        )}
 
         {/* Status Container */}
         <View style={styles.statusContainer}>
@@ -668,6 +760,14 @@ const styles = StyleSheet.create({
     textShadowColor: "#000",
     textShadowOffset: { width: 2, height: 2 },
     textShadowRadius: 4,
+  },
+  timerContainer: {
+    marginBottom: 20,
+  },
+  timerText: {
+    fontSize: 16,
+    color: "#a0a0a0",
+    fontFamily: "monospace",
   },
   statusContainer: {
     height: 50,

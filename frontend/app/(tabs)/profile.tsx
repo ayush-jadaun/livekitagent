@@ -197,7 +197,7 @@ export default function ProfileScreen() {
   };
 
   const handleSettings = () => {
-    // Navigate to settings screen
+    router.push("/(payment)/payment")
   };
 
   const handleLogout = async () => {
@@ -380,7 +380,7 @@ export default function ProfileScreen() {
             <Text style={styles.menuArrow}>→</Text>
           </TouchableOpacity> */}
 
-{/* 
+
           <TouchableOpacity
             style={styles.menuItem}
             activeOpacity={0.7}
@@ -389,7 +389,7 @@ export default function ProfileScreen() {
             <Text style={styles.menuEmoji}>⚙️</Text>
             <Text style={styles.menuText}>Settings</Text>
             <Text style={styles.menuArrow}>→</Text>
-          </TouchableOpacity> */}
+          </TouchableOpacity>
 
           <TouchableOpacity style={styles.menuItem} activeOpacity={0.7} onPress={handleForm}>
             <Text style={styles.menuEmoji}>💬</Text>
