@@ -15,6 +15,7 @@ import RazorpayCheckout from "react-native-razorpay";
 import { supabase } from "../../lib/supabase";
 import { User } from "@supabase/supabase-js";
 import { router } from "expo-router";
+import * as Localization from "expo-localization";
 
 // Replace with your actual backend URL
 const BACKEND_URL =
@@ -65,9 +66,39 @@ const RazorpayPaymentScreen = () => {
   const [user, setUser] = useState<User | null>(null);
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
 
+  // Currency conversion state
+  const [usdRate, setUsdRate] = useState<number | null>(null);
+  const [rateLoading, setRateLoading] = useState<boolean>(false);
+
   useEffect(() => {
     loadUserData();
   }, []);
+
+  useEffect(() => {
+    fetchUsdRate();
+  }, []);
+
+  // Fetch USD rate from API
+  const fetchUsdRate = async () => {
+    setRateLoading(true);
+    try {
+      // Using exchangerate-api.com (open.er-api.com) for INR->USD
+      const response = await fetch("https://open.er-api.com/v6/latest/INR");
+      const data = await response.json();
+      if (data && data.rates && data.rates.USD) {
+        setUsdRate(data.rates.USD);
+      } else {
+        setUsdRate(0.012); // fallback
+      }
+    } catch (error) {
+      setUsdRate(0.012); // fallback
+    }
+    setRateLoading(false);
+  };
+
+  const getCountry = () => {
+    return userProfile?.country || Localization.region || "IN";
+  };
 
   const loadUserData = async () => {
     try {
@@ -446,8 +477,17 @@ const RazorpayPaymentScreen = () => {
     }
   };
 
+  // Multi-currency price formatting
   const formatPrice = (price: number) => {
-    return `₹${(price / 100).toFixed(2)}`;
+    const country = getCountry();
+    // If USD rate still loading or failed, fallback to INR only
+    if (country === "IN" || usdRate == null) {
+      return `₹${(price / 100).toFixed(2)}`;
+    } else {
+      // Show USD price for outside India
+      const usdPrice = (price / 100) * usdRate;
+      return `$${usdPrice.toFixed(2)} (charged in INR)`;
+    }
   };
 
   const getUserDisplayName = () => {
@@ -464,7 +504,7 @@ const RazorpayPaymentScreen = () => {
   };
 
   // Loading state
-  if (isLoading) {
+  if (isLoading || rateLoading) {
     return (
       <SafeAreaView style={[styles.container, styles.loadingContainer]}>
         <ActivityIndicator size="large" color="#3399cc" />
@@ -492,6 +532,8 @@ const RazorpayPaymentScreen = () => {
       paymentStatus.status === "past_due" ||
       paymentStatus.status === "paused" ||
       paymentStatus.status === "completed");
+
+  const country = getCountry();
 
   return (
     <View style={styles.outerContainer}>
@@ -557,6 +599,15 @@ const RazorpayPaymentScreen = () => {
                   {formatPrice(plan.monthly_price)}/month
                 </Text>
               </View>
+              {/* Show INR value as a note for non-IN users */}
+              {country !== "IN" && (
+                <Text style={styles.note}>
+                  INR price: ₹{(plan.monthly_price / 100).toFixed(2)}
+                  <br />
+                  You will be charged in INR. Currency conversion is handled by
+                  your bank.
+                </Text>
+              )}
             </TouchableOpacity>
           ))}
 
@@ -588,6 +639,15 @@ const RazorpayPaymentScreen = () => {
                 <Text style={{ color: "#ff4444" }}>
                   No refund is allowed for payments made.
                 </Text>
+                {country !== "IN" && (
+                  <>
+                    {"\n"}
+                    <Text style={{ color: "#ff9800" }}>
+                      You will be charged in INR. Currency conversion is handled
+                      by your bank.
+                    </Text>
+                  </>
+                )}
               </Text>
             </View>
           )}
@@ -612,8 +672,8 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: "#00000000", // transparent, so you see camera below if present
     justifyContent: "flex-start",
-    padding:10,
-    paddingTop:50 // push content to bottom
+    padding: 10,
+    paddingTop: 50, // push content to bottom
   },
   container: {
     flex: 0,
