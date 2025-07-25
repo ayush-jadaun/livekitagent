@@ -742,19 +742,43 @@ async def create_subscription(
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
 
-        # Create or get customer
-        customer_data = {
-            "name": request.customer_name or user['name'],
-            "email": request.customer_email,
-            "contact": "",  # Optional field
-            "notes": {
-                "user_id": user_id
-            }
-        }
+        # Check if customer already exists in your database
+        existing_customer = await conn.fetchrow("""
+            SELECT razorpay_customer_id 
+            FROM payments 
+            WHERE user_id = $1 AND razorpay_customer_id IS NOT NULL
+            LIMIT 1
+        """, user_id)
+
+        customer_id = None
         
-        logger.info(f"Creating customer with data: {customer_data}")
-        customer = razorpay_client.customer.create(customer_data)
-        logger.info(f"Customer created: {customer['id']}")
+        if existing_customer:
+            customer_id = existing_customer['razorpay_customer_id']
+            logger.info(f"Using existing customer: {customer_id}")
+            
+            # Verify customer still exists in Razorpay
+            try:
+                customer = razorpay_client.customer.fetch(customer_id)
+                logger.info(f"Existing customer verified: {customer_id}")
+            except Exception as e:
+                logger.warning(f"Existing customer {customer_id} not found in Razorpay: {str(e)}")
+                customer_id = None
+        
+        # Create new customer if none exists or existing one is invalid
+        if not customer_id:
+            customer_data = {
+                "name": request.customer_name or user['name'],
+                "email": request.customer_email,
+                "contact": "",  # Optional field
+                "notes": {
+                    "user_id": user_id
+                }
+            }
+            
+            logger.info(f"Creating new customer with data: {customer_data}")
+            customer = razorpay_client.customer.create(customer_data)
+            customer_id = customer['id']
+            logger.info(f"New customer created: {customer_id}")
 
         # Handle Razorpay plan creation/retrieval
         razorpay_plan_id = plan.get('razorpay_plan_id')
@@ -822,14 +846,11 @@ async def create_subscription(
         # Create subscription
         subscription_data = {
             "plan_id": razorpay_plan_id,
-            "customer_id": customer["id"],
+            "customer_id": customer_id,
             "quantity": 1,
-            "total_count": 12,  # 12 months
+            "total_count": 1,  # 1 month
             "customer_notify": 1,
-
-
-            "start_at": int((datetime.now(timezone.utc) + timedelta(minutes=2)).timestamp()),
-
+            "start_at": int((datetime.now(timezone.utc) + timedelta(minutes=1)).timestamp()),
             "notes": {
                 "user_id": user_id,
                 "plan_id": request.plan_id
@@ -852,7 +873,7 @@ async def create_subscription(
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
             RETURNING id
         """, 
-            user_id, request.plan_id, customer["id"], subscription["id"],
+            user_id, request.plan_id, customer_id, subscription["id"],
             "created",  # Initial status
             plan['monthly_limit'], 0, start_at, next_billing_at
         )
@@ -862,7 +883,7 @@ async def create_subscription(
             "payment_id": str(payment_id),
             "short_url": subscription.get("short_url"),
             "status": subscription["status"],
-            "customer_id": customer["id"],
+            "customer_id": customer_id,
             "plan_id": razorpay_plan_id
         }
         
@@ -874,7 +895,6 @@ async def create_subscription(
         import traceback
         logger.error(f"Traceback: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"Failed to create subscription: {str(e)}")
-
 @app.get("/api/payments/current", response_model=PaymentResponse)
 async def get_current_payment(
     user_id: str = Depends(get_current_user),
