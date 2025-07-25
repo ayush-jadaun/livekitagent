@@ -76,6 +76,9 @@ RAZORPAY_WEBHOOK_SECRET = os.getenv('RAZORPAY_WEBHOOK_SECRET')
 if not RAZORPAY_WEBHOOK_SECRET:
     raise ValueError("RAZORPAY_WEBHOOK_SECRET is required")
 
+TRIAL_LIMIT_SECONDS=150
+
+
 def trigger_agent_connection(room_name: str):
     """Start agent process for the room via subprocess and track it."""
     try:
@@ -130,6 +133,7 @@ class RoomInfo(BaseModel):
     room_id: str
     room_name: str
     room_condition: str
+    trial_seconds_used: int
 
 # Payment models
 class PlanResponse(BaseModel):
@@ -268,11 +272,29 @@ async def create_session(conn, user_id: str, room_id: str):
 async def end_session(conn, session_id: str, user_id: str):
     try:
         async with conn.transaction():
+
+            session = await conn.fetchrow(
+                "SELECT started_at FROM sessions WHERE id = $1 AND user_id = $2 AND finished_at IS NULL",
+                session_id, user_id
+            )
+            if not session:
+                logger.warning(f"Attempted to end a non-existent or already ended session: {session_id}")
+                return
+            
             await conn.execute("""
                 UPDATE sessions 
                 SET finished_at = NOW()
                 WHERE id = $1 AND user_id = $2
             """, session_id, user_id)
+
+            # CORRECTED: Use timezone-aware 'now' to match the database's timezone-aware timestamp
+            duration = datetime.now(timezone.utc) - session['started_at']
+            duration_seconds = int(duration.total_seconds())
+
+            await conn.execute(
+                "UPDATE users SET trial_seconds_used = trial_seconds_used + $1 WHERE id = $2",
+                duration_seconds, user_id
+            )
             await conn.execute("""
                 UPDATE room 
                 SET room_condition = 'off', updated_at = NOW()
@@ -282,7 +304,6 @@ async def end_session(conn, session_id: str, user_id: str):
     except Exception as e:
         logger.error(f"Error ending session: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to end session")
-
 # --- Payment utility ---
 def verify_razorpay_signature(payload_body: bytes, signature: str, secret: str) -> bool:
     """Verify Razorpay webhook signature"""
@@ -310,7 +331,7 @@ async def check_payment_status(user_id: str, conn) -> tuple[bool, str]:
         payment = await conn.fetchrow("""
             SELECT session_limit, session_used, status, end_at, next_billing_at, razorpay_subscription_id
             FROM payments 
-            WHERE user_id = $1 AND status IN ('active', 'past_due', 'authenticated', 'created')
+            WHERE user_id = $1 AND status IN ('active', 'past_due', 'active', 'created')
             ORDER BY created_at DESC
             LIMIT 1
         """, user_id)
@@ -446,39 +467,41 @@ async def start_session(
     conn = Depends(get_db)
 ):
     try:
-        # Enhanced payment check
-        can_start, message = await check_payment_status(user_id, conn)
-        if not can_start:
-            raise HTTPException(status_code=403, detail=message)
-        
+        # 1. Fetch user's trial status first
+        user = await conn.fetchrow("SELECT trial_seconds_used FROM users WHERE id = $1", user_id)
+        if not user:
+            # This should be handled by ensure_user_exists, but as a safeguard:
+            raise HTTPException(status_code=404, detail="User not found.")
+
+        # 2. Check if trial is exhausted
+        if user['trial_seconds_used'] >= TRIAL_LIMIT_SECONDS:
+            logger.info(f"User {user_id} has exhausted trial ({user['trial_seconds_used']}s). Checking for subscription.")
+            # Trial is over, check for a valid payment/subscription
+            can_start, message = await check_payment_status(user_id, conn)
+            if not can_start:
+                # No trial AND no subscription, block the call.
+                raise HTTPException(status_code=403, detail="Your free trial has ended. Please subscribe to continue.")
+        else:
+             logger.info(f"User {user_id} has {TRIAL_LIMIT_SECONDS - user['trial_seconds_used']}s of trial remaining.")
+
+        # 3. If checks pass, proceed to create the session
         room_id, room_name = await ensure_user_exists(conn, user_id)
         session_id = await create_session(conn, user_id, room_id)
-        
-        # Increment usage atomically
-        updated_usage = await conn.fetchval("""
-            UPDATE payments 
-            SET session_used = session_used + 1, updated_at = NOW()
-            WHERE user_id = $1 AND status IN ('active', 'past_due')
-            RETURNING session_used
-        """, user_id)
-        
-        if updated_usage is None:
-            # Rollback session creation
-            await conn.execute("DELETE FROM sessions WHERE id = $1", session_id)
-            raise HTTPException(status_code=403, detail="Payment plan not found")
-        
-        # Generate LiveKit token
-        token = api.AccessToken(
-            LIVEKIT_API_KEY,
-            LIVEKIT_API_SECRET
-        ).with_identity(user_id) \
-         .with_name(f"user_{user_id}") \
-         .with_grants(api.VideoGrants(
-             room_join=True,
-             room=room_name,
-             room_create=True,
-         ))
-        
+
+        # Increment usage for paid users
+        if user['trial_seconds_used'] >= TRIAL_LIMIT_SECONDS:
+            await conn.execute(
+                "UPDATE payments SET session_used = session_used + 1, updated_at = NOW() WHERE user_id = $1 AND status IN ('active', 'past_due')",
+                user_id
+            )
+            logger.info(f"Incremented paid session usage for user {user_id}")
+
+        # 4. Generate LiveKit token
+        token = api.AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET) \
+            .with_identity(user_id) \
+            .with_name(f"user_{user_id}") \
+            .with_grants(api.VideoGrants(room_join=True, room=room_name, room_create=True))
+
         return SessionResponse(
             session_id=session_id,
             room_name=room_name,
@@ -486,13 +509,12 @@ async def start_session(
             token=token.to_jwt(),
             livekit_url=LIVEKIT_URL
         )
-        
+
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error starting session: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to start session")
-
 @app.post("/api/sessions/{session_id}/end")
 async def end_session_endpoint(
     session_id: str,
@@ -506,27 +528,42 @@ async def end_session_endpoint(
         logger.error(f"Error ending session: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to end session")
 
-@app.get("/api/users/room")
+@app.get("/api/users/room", response_model=RoomInfo)
 async def get_user_room(
     user_id: str = Depends(get_current_user),
     conn = Depends(get_db)
 ):
     try:
-        room_id, room_name = await ensure_user_exists(conn, user_id)
-        room_info = await conn.fetchrow("""
-            SELECT id, room_name, room_condition 
-            FROM room 
-            WHERE user_id = $1
+        # Join with users table to get trial usage
+        user_room_info = await conn.fetchrow("""
+            SELECT r.id, r.room_name, r.room_condition, u.trial_seconds_used
+            FROM room r
+            JOIN users u ON r.user_id = u.id
+            WHERE r.user_id = $1
         """, user_id)
+
+        if not user_room_info:
+            # If user has no room, ensure one is created and re-fetch
+            await ensure_user_exists(conn, user_id)
+            user_room_info = await conn.fetchrow("""
+                SELECT r.id, r.room_name, r.room_condition, u.trial_seconds_used
+                FROM room r
+                JOIN users u ON r.user_id = u.id
+                WHERE r.user_id = $1
+            """, user_id)
+
+        if not user_room_info:
+             raise HTTPException(status_code=404, detail="Could not find or create room for user.")
+
         return RoomInfo(
-            room_id=str(room_info['id']),
-            room_name=room_info['room_name'],
-            room_condition=room_info['room_condition']
+            room_id=str(user_room_info['id']),
+            room_name=user_room_info['room_name'],
+            room_condition=user_room_info['room_condition'],
+            trial_seconds_used=user_room_info['trial_seconds_used']
         )
     except Exception as e:
         logger.error(f"Error getting room info: {str(e)}")
         raise HTTPException(status_code=500, detail="Failed to get room info")
-
 @app.get("/api/sessions/active")
 async def get_active_sessions(
     user_id: str = Depends(get_current_user),
