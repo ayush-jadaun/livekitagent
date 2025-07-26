@@ -48,6 +48,7 @@ DATABASE_URL = os.getenv('DATABASE_URL')
 if not DATABASE_URL:
     raise ValueError("DATABASE_URL environment variable is required")
 
+DATABASE_ISSUER=os.getenv('DATABASE_ISSUER')
 # LiveKit configuration
 LIVEKIT_API_KEY = os.getenv('LIVEKIT_API_KEY')
 LIVEKIT_API_SECRET = os.getenv('LIVEKIT_API_SECRET')
@@ -188,7 +189,7 @@ async def get_current_user_with_metadata(credentials: HTTPAuthorizationCredentia
             SUPABASE_JWT_SECRET,
             algorithms=["HS256"],
             audience="authenticated",
-            issuer="https://qivmwvqzgyykzmmofnqz.supabase.co/auth/v1"
+            issuer=DATABASE_ISSUER
         )
         user_id = payload.get("sub")
         if not user_id:
